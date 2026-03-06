@@ -1,11 +1,9 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
-
-// -*- c++ -*-
 
 #pragma once
 
@@ -32,12 +30,15 @@ struct ScalarQuantizer : Quantizer {
         QT_fp16,
         QT_8bit_direct, ///< fast indexing of uint8s
         QT_6bit,        ///< 6 bits per component
+        QT_bf16,
+        QT_8bit_direct_signed, ///< fast indexing of signed int8s ranging from
+                               ///< [-128 to 127]
     };
 
     QuantizerType qtype = QT_8bit;
 
     /** The uniform encoder can estimate the range of representable
-     * values of the unform encoder using different statistics. Here
+     * values of the uniform encoder using different statistics. Here
      * rs = rangestat_arg */
 
     // rangestat_arg.
@@ -95,9 +96,7 @@ struct ScalarQuantizer : Quantizer {
     SQuantizer* select_quantizer() const;
 
     struct SQDistanceComputer : FlatCodesDistanceComputer {
-        const float* q;
-
-        SQDistanceComputer() : q(nullptr) {}
+        SQDistanceComputer() : FlatCodesDistanceComputer(nullptr) {}
 
         virtual float query_to_code(const uint8_t* code) const = 0;
 

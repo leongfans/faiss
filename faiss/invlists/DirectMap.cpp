@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -15,6 +15,7 @@
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/impl/IDSelector.h>
+#include <faiss/invlists/BlockInvertedLists.h>
 
 namespace faiss {
 
@@ -52,7 +53,7 @@ void DirectMap::set_type(
             for (long ofs = 0; ofs < list_size; ofs++) {
                 FAISS_THROW_IF_NOT_MSG(
                         0 <= idlist[ofs] && idlist[ofs] < ntotal,
-                        "direct map supported only for seuquential ids");
+                        "direct map supported only for sequential ids");
                 array[idlist[ofs]] = lo_build(key, ofs);
             }
         } else if (new_type == Hashtable) {
@@ -84,8 +85,9 @@ idx_t DirectMap::get(idx_t key) const {
 }
 
 void DirectMap::add_single_id(idx_t id, idx_t list_no, size_t offset) {
-    if (type == NoMap)
+    if (type == NoMap) {
         return;
+    }
 
     if (type == Array) {
         assert(id == array.size());
@@ -148,8 +150,12 @@ size_t DirectMap::remove_ids(const IDSelector& sel, InvertedLists* invlists) {
     std::vector<idx_t> toremove(nlist);
 
     size_t nremove = 0;
-
+    BlockInvertedLists* block_invlists =
+            dynamic_cast<BlockInvertedLists*>(invlists);
     if (type == NoMap) {
+        if (block_invlists != nullptr) {
+            return block_invlists->remove_ids(sel);
+        }
         // exhaustive scan of IVF
 #pragma omp parallel for
         for (idx_t i = 0; i < nlist; i++) {
@@ -178,6 +184,9 @@ size_t DirectMap::remove_ids(const IDSelector& sel, InvertedLists* invlists) {
             }
         }
     } else if (type == Hashtable) {
+        FAISS_THROW_IF_MSG(
+                block_invlists,
+                "remove with hashtable is not supported with BlockInvertedLists");
         const IDSelectorArray* sela =
                 dynamic_cast<const IDSelectorArray*>(&sel);
         FAISS_THROW_IF_NOT_MSG(

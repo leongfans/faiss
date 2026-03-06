@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -15,7 +15,6 @@
 
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/utils/hamming.h>
-#include <faiss/utils/utils.h>
 
 namespace faiss {
 
@@ -87,12 +86,14 @@ void IndexLSH::train(idx_t n, const float* x) {
 
         for (idx_t i = 0; i < nbits; i++) {
             float* xi = transposed_x.get() + i * n;
-            // std::nth_element
-            std::sort(xi, xi + n);
-            if (n % 2 == 1)
-                thresholds[i] = xi[n / 2];
-            else
-                thresholds[i] = (xi[n / 2 - 1] + xi[n / 2]) / 2;
+            // Use nth_element (O(n)) instead of sort (O(n log n))
+            std::nth_element(xi, xi + n / 2, xi + n);
+            float median = xi[n / 2];
+            if (n % 2 == 0) {
+                std::nth_element(xi, xi + n / 2 - 1, xi + n);
+                median = (median + xi[n / 2 - 1]) / 2;
+            }
+            thresholds[i] = median;
         }
     }
     is_trained = true;

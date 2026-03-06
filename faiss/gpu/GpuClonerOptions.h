@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -21,8 +21,10 @@ struct GpuClonerOptions {
     /// is the coarse quantizer in float16?
     bool useFloat16CoarseQuantizer = false;
 
-    /// for GpuIndexIVFFlat, is storage in float16?
     /// for GpuIndexIVFPQ, are intermediate calculations in float16?
+    /// Note: for float16 storage, use GpuIndexIVFScalarQuantizer
+    /// or cuVS, not GpuIndexIVFFlat. useFloat16 will not affect
+    /// GpuIndexIVFFlat storage.
     bool useFloat16 = false;
 
     /// use precomputed tables?
@@ -37,8 +39,18 @@ struct GpuClonerOptions {
     /// Set verbose options on the index
     bool verbose = false;
 
-    /// use the RAFT implementation
-    bool use_raft = false;
+    /// use the cuVS implementation
+#if defined USE_NVIDIA_CUVS
+    bool use_cuvs = true;
+#else
+    bool use_cuvs = false;
+#endif
+
+    /// This flag controls the CPU fallback logic for coarse quantizer
+    /// component of the index. When set to false (default), the cloner will
+    /// throw an exception for indices not implemented on GPU. When set to
+    /// true, it will fallback to a CPU implementation.
+    bool allowCpuCoarseQuantizer = false;
 };
 
 struct GpuMultipleClonerOptions : public GpuClonerOptions {

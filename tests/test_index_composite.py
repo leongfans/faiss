@@ -1,10 +1,9 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 """ more elaborate that test_index.py """
-from __future__ import absolute_import, division, print_function
 
 import numpy as np
 import unittest
@@ -18,6 +17,7 @@ from common_faiss_tests import get_dataset_2, get_dataset
 from faiss.contrib.datasets import SyntheticDataset
 from faiss.contrib.inspect_tools import make_LinearTransform_matrix
 from faiss.contrib.evaluation import check_ref_knn_with_draws
+
 
 class TestRemoveFastScan(unittest.TestCase):
     def do_test(self, ntotal, removed):
@@ -168,8 +168,6 @@ class TestRemove(unittest.TestCase):
         index.remove_ids(remove_set)
         index.add_with_ids(X[5:, :], idx[5:])
 
-        print (index.search(X, 1))
-
         for i in range(10):
             _, searchres = index.search(X[i:i + 1, :], 1)
             if idx[i] in remove_set:
@@ -194,13 +192,7 @@ class TestRemove(unittest.TestCase):
             assert False, 'should have raised an exception'
 
         # while we are there, let's test I/O as well...
-        fd, tmpnam = tempfile.mkstemp()
-        os.close(fd)
-        try:
-            faiss.write_index_binary(index, tmpnam)
-            index = faiss.read_index_binary(tmpnam)
-        finally:
-            os.remove(tmpnam)
+        index = faiss.deserialize_index_binary(faiss.serialize_index_binary(index))
 
         assert index.reconstruct(1004)[0] == 104
         try:
@@ -209,6 +201,11 @@ class TestRemove(unittest.TestCase):
             pass
         else:
             assert False, 'should have raised an exception'
+
+        # Verify deserialized index is serializable again
+        index2 = faiss.deserialize_index_binary(
+            faiss.serialize_index_binary(index))
+        assert index2.reconstruct(1004)[0] == 104
 
 
 class TestRangeSearch(unittest.TestCase):
@@ -373,6 +370,8 @@ class TestTransformChain(unittest.TestCase):
 
 @unittest.skipIf(platform.system() == 'Windows', \
                  'Mmap not supported on Windows.')
+
+
 class TestRareIO(unittest.TestCase):
 
     def compare_results(self, index1, index2, xq):
@@ -468,17 +467,15 @@ class TestIVFFlatDedup(unittest.TestCase):
         check_ref_knn_with_draws(Dref, Iref, Dnew, Inew)
 
         # test I/O
-        fd, tmpfile = tempfile.mkstemp()
-        os.close(fd)
-        try:
-            faiss.write_index(index_new, tmpfile)
-            index_st = faiss.read_index(tmpfile)
-        finally:
-            if os.path.exists(tmpfile):
-                os.unlink(tmpfile)
+        index_st = faiss.deserialize_index(faiss.serialize_index(index_new))
         Dst, Ist = index_st.search(xq, 20)
 
         check_ref_knn_with_draws(Dnew, Inew, Dst, Ist)
+
+        # Verify deserialized index is serializable again
+        index_st2 = faiss.deserialize_index(faiss.serialize_index(index_st))
+        Dst2, Ist2 = index_st2.search(xq, 20)
+        check_ref_knn_with_draws(Dnew, Inew, Dst2, Ist2)
 
         # test remove
         toremove = np.hstack((np.arange(3, 1000, 5), np.arange(850, 950)))
@@ -532,6 +529,8 @@ class TestSerialize(unittest.TestCase):
 
 @unittest.skipIf(platform.system() == 'Windows',
                  'OnDiskInvertedLists is unsupported on Windows.')
+
+
 class TestRenameOndisk(unittest.TestCase):
 
     def test_rename(self):
@@ -823,6 +822,12 @@ class TestIndependentQuantizer(unittest.TestCase):
         np.testing.assert_array_equal(Dnew, D2)
         np.testing.assert_array_equal(Inew, I2)
 
+        # Verify deserialized index is serializable again
+        index3 = faiss.deserialize_index(faiss.serialize_index(index2))
+        D3, I3 = index3.search(ds.get_queries(), 10)
+        np.testing.assert_array_equal(Dnew, D3)
+        np.testing.assert_array_equal(Inew, I3)
+
 
 
 class TestSearchAndReconstruct(unittest.TestCase):
@@ -954,7 +959,6 @@ class TestSearchAndGetCodes(unittest.TestCase):
         index.nprobe = 10
         Dref, Iref = index.search(ds.get_queries(), 10)
 
-        #print(index.search_and_return_codes)
         D, I, codes = index.search_and_return_codes(
             ds.get_queries(), 10, include_listnos=True)
 

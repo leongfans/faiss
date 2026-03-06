@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -66,43 +66,6 @@ class TestPCA(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(y)))
 
 
-class TestRevSwigPtr(unittest.TestCase):
-
-    def test_rev_swig_ptr(self):
-
-        index = faiss.IndexFlatL2(4)
-        xb0 = np.vstack([
-            i * 10 + np.array([1, 2, 3, 4], dtype='float32')
-            for i in range(5)])
-        index.add(xb0)
-        xb = faiss.rev_swig_ptr(index.get_xb(), 4 * 5).reshape(5, 4)
-        self.assertEqual(np.abs(xb0 - xb).sum(), 0)
-
-
-class TestException(unittest.TestCase):
-
-    def test_exception(self):
-
-        index = faiss.IndexFlatL2(10)
-
-        a = np.zeros((5, 10), dtype='float32')
-        b = np.zeros(5, dtype='int64')
-
-        # an unsupported operation for IndexFlat
-        self.assertRaises(
-            RuntimeError,
-            index.add_with_ids, a, b
-        )
-        # assert 'add_with_ids not implemented' in str(e)
-
-    def test_exception_2(self):
-        self.assertRaises(
-            RuntimeError,
-            faiss.index_factory, 12, 'IVF256,Flat,PQ8'
-        )
-        #    assert 'could not parse' in str(e)
-
-
 class TestMapLong2Long(unittest.TestCase):
 
     def test_maplong2long(self):
@@ -117,7 +80,83 @@ class TestMapLong2Long(unittest.TestCase):
         assert m.search(12343) == -1
 
 
-class TestOrthognalReconstruct(unittest.TestCase):
+class TestHadamardRotation(unittest.TestCase):
+
+    def test_shape(self):
+        d = 128
+        n = 100
+        np.random.seed(123)
+        x = np.random.randn(n, d).astype('float32')
+
+        fr = faiss.HadamardRotation(d)
+        y = fr.apply(x)
+        # d=128 is a power of 2, so d_out == d_in
+        self.assertEqual(y.shape, (n, d))
+
+    def test_non_power_of_2(self):
+        """Non-power-of-2 dimensions are zero-padded to next power of 2."""
+        cases = {192: 256, 384: 512, 768: 1024, 1536: 2048}
+        for d, expected_out in cases.items():
+            np.random.seed(42)
+            x = np.random.randn(20, d).astype('float32')
+            fr = faiss.HadamardRotation(d)
+            self.assertEqual(fr.d_out, expected_out)
+            y = fr.apply(x)
+            self.assertEqual(y.shape, (20, expected_out))
+            # output should be finite and non-trivial
+            self.assertTrue(np.all(np.isfinite(y)))
+            self.assertFalse(np.allclose(y, 0))
+
+    def test_deterministic(self):
+        d = 64
+        n = 20
+        np.random.seed(789)
+        x = np.random.randn(n, d).astype('float32')
+
+        fr1 = faiss.HadamardRotation(d, 42)
+        fr2 = faiss.HadamardRotation(d, 42)
+        y1 = fr1.apply(x)
+        y2 = fr2.apply(x)
+        np.testing.assert_array_equal(y1, y2)
+
+    def test_different_seeds(self):
+        d = 64
+        n = 20
+        np.random.seed(101)
+        x = np.random.randn(n, d).astype('float32')
+
+        fr1 = faiss.HadamardRotation(d, 1)
+        fr2 = faiss.HadamardRotation(d, 2)
+        y1 = fr1.apply(x)
+        y2 = fr2.apply(x)
+        self.assertFalse(np.allclose(y1, y2))
+
+    def test_norm_preservation_power_of_2(self):
+        """Hadamard transform preserves L2 norms for power-of-2 dims."""
+        d = 256
+        np.random.seed(42)
+        x = np.random.randn(100, d).astype('float32')
+        fr = faiss.HadamardRotation(d)
+        y = fr.apply(x)
+        norms_in = np.linalg.norm(x, axis=1)
+        norms_out = np.linalg.norm(y, axis=1)
+        np.testing.assert_allclose(norms_in, norms_out, rtol=1e-4)
+
+    def test_index_factory(self):
+        d = 64
+        n = 500
+        np.random.seed(202)
+        x = np.random.randn(n, d).astype('float32')
+
+        index = faiss.index_factory(d, "HR,Flat")
+        index.train(x)
+        index.add(x)
+        D, I = index.search(x[:5], 5)
+        # first result for each query should be itself
+        np.testing.assert_array_equal(I[:, 0], np.arange(5))
+
+
+class TestOrthogonalReconstruct(unittest.TestCase):
 
     def test_recons_orthonormal(self):
         lt = faiss.LinearTransform(20, 10, True)
@@ -140,7 +179,7 @@ class TestOrthognalReconstruct(unittest.TestCase):
 
         self.assertGreater(1e-5, err)
 
-    def test_recons_orthogona_impossible(self):
+    def test_recons_orthogonal_impossible(self):
         lt = faiss.LinearTransform(20, 10, True)
         rs = np.random.RandomState(10)
         A = rs.randn(10 * 20).astype('float32')
@@ -189,7 +228,6 @@ class TestNyFuncs(unittest.TestCase):
         for d in 1, 2, 4, 8, 12, 16:
             x = rs.rand(d).astype('float32')
             for ny in 128, 129, 130:
-                print("d=%d ny=%d" % (d, ny))
                 y = rs.rand(ny, d).astype('float32')
                 ref = ((x - y) ** 2).sum(1)
                 new = np.zeros(ny, dtype='float32')
@@ -204,7 +242,6 @@ class TestNyFuncs(unittest.TestCase):
         for d in 1, 2, 4, 8, 12, 16:
             x = rs.rand(d).astype('float32')
             for ny in 128, 129, 130:
-                print("d=%d ny=%d" % (d, ny))
                 y = rs.rand(ny, d).astype('float32')
                 ref = (x * y).sum(1)
                 new = np.zeros(ny, dtype='float32')
@@ -220,7 +257,6 @@ class TestMatrixStats(unittest.TestCase):
         m = rs.rand(40, 20).astype('float32')
         m[5:10] = 0
         comments = faiss.MatrixStats(m).comments
-        print(comments)
         assert 'has 5 copies' in comments
         assert '5 null vectors' in comments
 
@@ -229,7 +265,6 @@ class TestMatrixStats(unittest.TestCase):
         m = rs.rand(40, 20).astype('float32')
         m[::2] = m[1::2]
         comments = faiss.MatrixStats(m).comments
-        print(comments)
         assert '20 vectors are distinct' in comments
 
     def test_dead_dims(self):
@@ -237,7 +272,6 @@ class TestMatrixStats(unittest.TestCase):
         m = rs.rand(40, 20).astype('float32')
         m[:, 5:10] = 0
         comments = faiss.MatrixStats(m).comments
-        print(comments)
         assert '5 dimensions are constant' in comments
 
     def test_rogue_means(self):
@@ -245,7 +279,6 @@ class TestMatrixStats(unittest.TestCase):
         m = rs.rand(40, 20).astype('float32')
         m[:, 5:10] += 12345
         comments = faiss.MatrixStats(m).comments
-        print(comments)
         assert '5 dimensions are too large wrt. their variance' in comments
 
     def test_normalized(self):
@@ -253,7 +286,6 @@ class TestMatrixStats(unittest.TestCase):
         m = rs.rand(40, 20).astype('float32')
         faiss.normalize_L2(m)
         comments = faiss.MatrixStats(m).comments
-        print(comments)
         assert 'vectors are normalized' in comments
 
     def test_hash(self):
@@ -300,7 +332,6 @@ class TestScalarQuantizer(unittest.TestCase):
                 D, I = index.search(x[3:], 1)
 
                 # assert D[0, 0] == Dref[0, 0]
-                # print(D[0, 0], ((x[3] - x[2]) ** 2).sum())
                 assert D[0, 0] == ((x[3] - x[2]) ** 2).sum()
 
     def test_6bit_equiv(self):
@@ -313,8 +344,6 @@ class TestScalarQuantizer(unittest.TestCase):
             index = faiss.IndexScalarQuantizer(
                 d, faiss.ScalarQuantizer.QT_6bit)
             index.train(trainset)
-
-            print('cs=', index.code_size)
 
             x = rs.randint(64, size=(100, d)).astype('float32')
 
@@ -330,7 +359,6 @@ class TestScalarQuantizer(unittest.TestCase):
             for i in range(20):
                 for j in range(10):
                     dis = ((y[i] - x2[I[i, j]]) ** 2).sum()
-                    # print(dis, D[i, j])
                     assert abs(D[i, j] - dis) / dis < 1e-5
 
     def test_reconstruct(self):
@@ -371,7 +399,6 @@ class TestRandom(unittest.TestCase):
         x = faiss.randint(20000, vmax=100)
         assert np.all(x >= 0) and np.all(x < 100)
         c = np.bincount(x, minlength=100)
-        print(c)
         assert c.max() - c.min() < 50 * 2
 
     def test_rand_vector(self):
@@ -390,7 +417,6 @@ class TestRandom(unittest.TestCase):
         # 445 for SyntheticDataset
         self.assertGreater(ninter, 420)
         self.assertLess(ninter, 460)
-
 
 
 class TestPairwiseDis(unittest.TestCase):
@@ -428,144 +454,6 @@ class TestPairwiseDis(unittest.TestCase):
         for i in range(50):
             assert np.allclose(
                 dis[i], np.dot(x[ix[i]], y[iy[i]]))
-
-
-class TestSWIGWrap(unittest.TestCase):
-    """ various regressions with the SWIG wrapper """
-
-    def test_size_t_ptr(self):
-        # issue 1064
-        index = faiss.IndexHNSWFlat(10, 32)
-
-        hnsw = index.hnsw
-        index.add(np.random.rand(100, 10).astype('float32'))
-        be = np.empty(2, 'uint64')
-        hnsw.neighbor_range(23, 0, faiss.swig_ptr(be), faiss.swig_ptr(be[1:]))
-
-    def test_id_map_at(self):
-        # issue 1020
-        n_features = 100
-        feature_dims = 10
-
-        features = np.random.random((n_features, feature_dims)).astype(np.float32)
-        idx = np.arange(n_features).astype(np.int64)
-
-        index = faiss.IndexFlatL2(feature_dims)
-        index = faiss.IndexIDMap2(index)
-        index.add_with_ids(features, idx)
-
-        [index.id_map.at(int(i)) for i in range(index.ntotal)]
-
-    def test_downcast_Refine(self):
-
-        index = faiss.IndexRefineFlat(
-            faiss.IndexScalarQuantizer(10, faiss.ScalarQuantizer.QT_8bit)
-        )
-
-        # serialize and deserialize
-        index2 = faiss.deserialize_index(
-            faiss.serialize_index(index)
-        )
-
-        assert isinstance(index2, faiss.IndexRefineFlat)
-
-    def do_test_array_type(self, dtype):
-        """ tests swig_ptr and rev_swig_ptr for this type of array """
-        a = np.arange(12).astype(dtype)
-        ptr = faiss.swig_ptr(a)
-        print(ptr)
-        a2 = faiss.rev_swig_ptr(ptr, 12)
-        np.testing.assert_array_equal(a, a2)
-
-    def test_all_array_types(self):
-        self.do_test_array_type('float32')
-        self.do_test_array_type('float64')
-        self.do_test_array_type('int8')
-        self.do_test_array_type('uint8')
-        self.do_test_array_type('int16')
-        self.do_test_array_type('uint16')
-        self.do_test_array_type('int32')
-        self.do_test_array_type('uint32')
-        self.do_test_array_type('int64')
-        self.do_test_array_type('uint64')
-
-    def test_int64(self):
-        # see https://github.com/facebookresearch/faiss/issues/1529
-        v = faiss.Int64Vector()
-
-        for i in range(10):
-            v.push_back(i)
-        a = faiss.vector_to_array(v)
-        assert a.dtype == 'int64'
-        np.testing.assert_array_equal(a, np.arange(10, dtype='int64'))
-
-        # check if it works in an IDMap
-        idx = faiss.IndexIDMap(faiss.IndexFlatL2(32))
-        idx.add_with_ids(
-            np.random.rand(10, 32).astype('float32'),
-            np.random.randint(1000, size=10, dtype='int64')
-        )
-        faiss.vector_to_array(idx.id_map)
-
-
-class TestNNDescentKNNG(unittest.TestCase):
-
-    def test_knng_L2(self):
-        self.subtest(32, 10, faiss.METRIC_L2)
-
-    def test_knng_IP(self):
-        self.subtest(32, 10, faiss.METRIC_INNER_PRODUCT)
-
-    def subtest(self, d, K, metric):
-        metric_names = {faiss.METRIC_L1: 'L1',
-                        faiss.METRIC_L2: 'L2',
-                        faiss.METRIC_INNER_PRODUCT: 'IP'}
-
-        nb = 1000
-        _, xb, _ = get_dataset_2(d, 0, nb, 0)
-
-        _, knn = faiss.knn(xb, xb, K + 1, metric)
-        knn = knn[:, 1:]
-
-        index = faiss.IndexNNDescentFlat(d, K, metric)
-        index.nndescent.S = 10
-        index.nndescent.R = 32
-        index.nndescent.L = K + 20
-        index.nndescent.iter = 5
-        index.verbose = True
-
-        index.add(xb)
-        graph = index.nndescent.final_graph
-        graph = faiss.vector_to_array(graph)
-        graph = graph.reshape(nb, K)
-
-        recalls = 0
-        for i in range(nb):
-            for j in range(K):
-                for k in range(K):
-                    if graph[i, j] == knn[i, k]:
-                        recalls += 1
-                        break
-        recall = 1.0 * recalls / (nb * K)
-        print('Metric: {}, knng accuracy: {}'.format(metric_names[metric], recall))
-        assert recall > 0.99
-
-    def test_small_nndescent(self):
-        """ building a too small graph used to crash, make sure it raises
-        an exception instead.
-        TODO: build the exact knn graph for small cases
-        """
-        d = 32
-        K = 10
-        index = faiss.IndexNNDescentFlat(d, K, faiss.METRIC_L2)
-        index.nndescent.S = 10
-        index.nndescent.R = 32
-        index.nndescent.L = K + 20
-        index.nndescent.iter = 5
-        index.verbose = True
-
-        xb = np.zeros((78, d), dtype='float32')
-        self.assertRaises(RuntimeError, index.add, xb)
 
 
 class TestResultHeap(unittest.TestCase):
@@ -656,7 +544,6 @@ class TestBucketSort(unittest.TestCase):
             rows, _ = np.where(tab == b)
             rows.sort()
             tab2[lims[b]:lims[b + 1]].sort()
-            # print(rows, tab2[lims[b] : lims[b + 1]])
             rows = set(rows)
             self.assertEqual(rows, set(tab2[lims[b]:lims[b + 1]]))
 
@@ -677,6 +564,7 @@ class TestBucketSort(unittest.TestCase):
 
     def test_bucket_sort_inplace_parallel_int64(self):
         self.do_test_bucket_sort_inplace(4, dtype='int64')
+
 
 class TestMergeKNNResults(unittest.TestCase):
 

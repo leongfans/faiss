@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -11,8 +11,6 @@
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/utils/Heap.h>
-#include <faiss/utils/distances.h>
-#include <faiss/utils/utils.h>
 
 namespace faiss {
 
@@ -60,36 +58,6 @@ void IndexRefine::reset() {
     ntotal = 0;
 }
 
-namespace {
-
-using idx_t = faiss::idx_t;
-
-template <class C>
-static void reorder_2_heaps(
-        idx_t n,
-        idx_t k,
-        idx_t* labels,
-        float* distances,
-        idx_t k_base,
-        const idx_t* base_labels,
-        const float* base_distances) {
-#pragma omp parallel for
-    for (idx_t i = 0; i < n; i++) {
-        idx_t* idxo = labels + i * k;
-        float* diso = distances + i * k;
-        const idx_t* idxi = base_labels + i * k_base;
-        const float* disi = base_distances + i * k_base;
-
-        heap_heapify<C>(k, diso, idxo, disi, idxi, k);
-        if (k_base != k) { // add remaining elements
-            heap_addn<C>(k, diso, idxo, disi + k, idxi + k, k_base - k);
-        }
-        heap_reorder<C>(k, diso, idxo);
-    }
-}
-
-} // anonymous namespace
-
 void IndexRefine::search(
         idx_t n,
         const float* x,
@@ -131,10 +99,11 @@ void IndexRefine::search(
     base_index->search(
             n, x, k_base, base_distances, base_labels, base_index_params);
 
-    for (int i = 0; i < n * k_base; i++)
+    for (int i = 0; i < n * k_base; i++) {
         assert(base_labels[i] >= -1 && base_labels[i] < ntotal);
+    }
 
-        // parallelize over queries
+    // parallelize over queries
 #pragma omp parallel if (n > 1)
     {
         std::unique_ptr<DistanceComputer> dc(
@@ -145,8 +114,9 @@ void IndexRefine::search(
             idx_t ij = i * k_base;
             for (idx_t j = 0; j < k_base; j++) {
                 idx_t idx = base_labels[ij];
-                if (idx < 0)
+                if (idx < 0) {
                     break;
+                }
                 base_distances[ij] = (*dc)(idx);
                 ij++;
             }
@@ -165,6 +135,45 @@ void IndexRefine::search(
                 n, k, labels, distances, k_base, base_labels, base_distances);
     } else {
         FAISS_THROW_MSG("Metric type not supported");
+    }
+}
+
+void IndexRefine::range_search(
+        idx_t n,
+        const float* x,
+        float radius,
+        RangeSearchResult* result,
+        const SearchParameters* params_in) const {
+    const IndexRefineSearchParameters* params = nullptr;
+    if (params_in) {
+        params = dynamic_cast<const IndexRefineSearchParameters*>(params_in);
+        FAISS_THROW_IF_NOT_MSG(
+                params, "IndexRefine params have incorrect type");
+    }
+
+    SearchParameters* base_index_params =
+            (params != nullptr) ? params->base_index_params : nullptr;
+
+    base_index->range_search(n, x, radius, result, base_index_params);
+
+#pragma omp parallel if (n > 1)
+    {
+        std::unique_ptr<DistanceComputer> dc(
+                refine_index->get_distance_computer());
+
+#pragma omp for
+        for (idx_t i = 0; i < n; i++) {
+            dc->set_query(x + i * d);
+
+            // reevaluate distances
+            const size_t idx_start = result->lims[i];
+            const size_t idx_end = result->lims[i + 1];
+
+            for (size_t j = idx_start; j < idx_end; j++) {
+                const auto label = result->labels[j];
+                result->distances[j] = (*dc)(label);
+            }
+        }
     }
 }
 
@@ -201,10 +210,12 @@ void IndexRefine::sa_decode(idx_t n, const uint8_t* bytes, float* x) const {
 }
 
 IndexRefine::~IndexRefine() {
-    if (own_fields)
+    if (own_fields) {
         delete base_index;
-    if (own_refine_index)
+    }
+    if (own_refine_index) {
         delete refine_index;
+    }
 }
 
 /***************************************************
@@ -275,8 +286,9 @@ void IndexRefineFlat::search(
     base_index->search(
             n, x, k_base, base_distances, base_labels, base_index_params);
 
-    for (int i = 0; i < n * k_base; i++)
+    for (int i = 0; i < n * k_base; i++) {
         assert(base_labels[i] >= -1 && base_labels[i] < ntotal);
+    }
 
     // compute refined distances
     auto rf = dynamic_cast<const IndexFlat*>(refine_index);
@@ -297,6 +309,55 @@ void IndexRefineFlat::search(
     } else {
         FAISS_THROW_MSG("Metric type not supported");
     }
+}
+
+/***************************************************
+ * IndexRefinePanorama
+ ***************************************************/
+
+void IndexRefinePanorama::search(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        float* distances,
+        idx_t* labels,
+        const SearchParameters* params_in) const {
+    const IndexRefineSearchParameters* params = nullptr;
+    if (params_in) {
+        params = dynamic_cast<const IndexRefineSearchParameters*>(params_in);
+        FAISS_THROW_IF_NOT_MSG(
+                params, "IndexRefineFlat params have incorrect type");
+    }
+
+    idx_t k_base = (params != nullptr) ? idx_t(k * params->k_factor)
+                                       : idx_t(k * k_factor);
+    SearchParameters* base_index_params =
+            (params != nullptr) ? params->base_index_params : nullptr;
+
+    FAISS_THROW_IF_NOT(k_base >= k);
+
+    FAISS_THROW_IF_NOT(base_index);
+    FAISS_THROW_IF_NOT(refine_index);
+
+    FAISS_THROW_IF_NOT(k > 0);
+    FAISS_THROW_IF_NOT(is_trained);
+
+    std::unique_ptr<idx_t[]> del1;
+    std::unique_ptr<float[]> del2;
+    idx_t* base_labels = new idx_t[n * k_base];
+    float* base_distances = new float[n * k_base];
+    del1.reset(base_labels);
+    del2.reset(base_distances);
+
+    base_index->search(
+            n, x, k_base, base_distances, base_labels, base_index_params);
+
+    for (int i = 0; i < n * k_base; i++) {
+        assert(base_labels[i] >= -1 && base_labels[i] < ntotal);
+    }
+
+    refine_index->search_subset(
+            n, x, k_base, base_labels, k, distances, labels);
 }
 
 } // namespace faiss

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -11,7 +11,6 @@
 
 #include <cinttypes>
 #include <cstdio>
-#include <memory>
 #include <unordered_set>
 
 #include <faiss/utils/hamming.h>
@@ -19,7 +18,6 @@
 
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
-#include <faiss/impl/platform_macros.h>
 
 namespace faiss {
 
@@ -179,8 +177,8 @@ void search_single_query_template(
 struct Run_search_single_query {
     using T = void;
     template <class HammingComputer, class... Types>
-    T f(Types... args) {
-        search_single_query_template<HammingComputer>(args...);
+    T f(Types*... args) {
+        search_single_query_template<HammingComputer>(*args...);
     }
 };
 
@@ -194,7 +192,7 @@ void search_single_query(
         size_t& ndis) {
     Run_search_single_query r;
     dispatch_HammingComputer(
-            index.code_size, r, index, q, res, n0, nlist, ndis);
+            index.code_size, r, &index, &q, &res, &n0, &nlist, &ndis);
 }
 
 } // anonymous namespace
@@ -342,7 +340,6 @@ static void verify_shortlist(
         const std::unordered_set<idx_t>& shortlist,
         SearchResults& res) {
     size_t code_size = index->code_size;
-    size_t nlist = 0, ndis = 0, n0 = 0;
 
     HammingComputer hc(q, code_size);
     const uint8_t* codes = index->xb.data();

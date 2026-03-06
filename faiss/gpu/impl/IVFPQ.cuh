@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -39,13 +39,13 @@ class IVFPQ : public IVFBase {
 
     /// Enable or disable pre-computed codes. The quantizer is needed to gather
     /// the IVF centroids for use
-    void setPrecomputedCodes(Index* coarseQuantizer, bool enable);
+    virtual void setPrecomputedCodes(Index* coarseQuantizer, bool enable);
 
     /// Returns our set of sub-quantizers of the form
     /// (sub q)(code id)(sub dim)
     Tensor<float, 3, true> getPQCentroids();
 
-    /// Find the approximate k nearest neigbors for `queries` against
+    /// Find the approximate k nearest neighbors for `queries` against
     /// our database
     void search(
             Index* coarseQuantizer,
@@ -134,7 +134,7 @@ class IVFPQ : public IVFBase {
             Tensor<float, 2, true>& outDistances,
             Tensor<idx_t, 2, true>& outIndices);
 
-   private:
+   protected:
     /// Number of sub-quantizers per vector
     const int numSubQuantizers_;
 

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -101,9 +101,10 @@ struct OnDiskInvertedLists : InvertedLists {
 
     // copy all inverted lists into *this, in compact form (without
     // allocating slots)
-    size_t merge_from(
+    size_t merge_from_multiple(
             const InvertedLists** ils,
             int n_il,
+            bool shift_ids = false,
             bool verbose = false);
 
     /// same as merge_from for a single invlist
@@ -120,7 +121,7 @@ struct OnDiskInvertedLists : InvertedLists {
 
     LockLevels* locks;
 
-    // encapsulates the threads that are busy prefeteching
+    // encapsulates the threads that are busy prefetching
     struct OngoingPrefetch;
     OngoingPrefetch* pf;
     int prefetch_nthread;

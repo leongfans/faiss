@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -119,11 +119,13 @@ void IVFBase::reset() {
             AllocInfo(AllocType::IVFLists, getCurrentDevice(), space_, stream);
 
     for (idx_t i = 0; i < numLists_; ++i) {
-        deviceListData_.emplace_back(std::unique_ptr<DeviceIVFList>(
-                new DeviceIVFList(resources_, info)));
+        deviceListData_.emplace_back(
+                std::unique_ptr<DeviceIVFList>(
+                        new DeviceIVFList(resources_, info)));
 
-        deviceListIndices_.emplace_back(std::unique_ptr<DeviceIVFList>(
-                new DeviceIVFList(resources_, info)));
+        deviceListIndices_.emplace_back(
+                std::unique_ptr<DeviceIVFList>(
+                        new DeviceIVFList(resources_, info)));
 
         listOffsetToUserIndex_.emplace_back(std::vector<idx_t>());
     }
@@ -338,6 +340,10 @@ void IVFBase::copyInvertedListsTo(InvertedLists* ivf) {
         ivf->add_entries(
                 i, listIndices.size(), listIndices.data(), listData.data());
     }
+}
+
+void IVFBase::reconstruct_n(idx_t i0, idx_t n, float* out) {
+    FAISS_THROW_MSG("not implemented");
 }
 
 void IVFBase::addEncodedVectorsToList_(

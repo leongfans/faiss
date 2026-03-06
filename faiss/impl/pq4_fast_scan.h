@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -24,6 +24,9 @@
 
 namespace faiss {
 
+struct NormTableScaler;
+struct SIMDResultHandler;
+
 /** Pack codes for consumption by the SIMD kernels.
  *  The unused bytes are set to 0.
  *
@@ -31,9 +34,11 @@ namespace faiss {
  * @param ntotal  number of input codes
  * @param nb      output number of codes (ntotal rounded up to a multiple of
  *                bbs)
- * @param nsq      number of sub-quantizers (=M rounded up to a muliple of 2)
+ * @param nsq      number of sub-quantizers (=M rounded up to a multiple of 2)
  * @param bbs     size of database blocks (multiple of 32)
  * @param blocks  output array, size nb * nsq / 2.
+ * @param code_stride  optional stride between consecutive codes (0 = use
+default (M + 1) / 2)
  */
 void pq4_pack_codes(
         const uint8_t* codes,
@@ -42,7 +47,8 @@ void pq4_pack_codes(
         size_t nb,
         size_t bbs,
         size_t nsq,
-        uint8_t* blocks);
+        uint8_t* blocks,
+        size_t code_stride = 0);
 
 /** Same as pack_codes but write in a given range of the output,
  * leaving the rest untouched. Assumes allocated entries are 0 on input.
@@ -51,6 +57,9 @@ void pq4_pack_codes(
  * @param i0      first output code to write
  * @param i1      last output code to write
  * @param blocks  output array, size at least ceil(i1 / bbs) * bbs * nsq / 2
+ * @param code_stride  optional stride between consecutive codes (0 = use
+ * default (M + 1) / 2)
+ * @param block_stride  stride in bytes between consecutive blocks.
  */
 void pq4_pack_codes_range(
         const uint8_t* codes,
@@ -59,7 +68,9 @@ void pq4_pack_codes_range(
         size_t i1,
         size_t bbs,
         size_t nsq,
-        uint8_t* blocks);
+        uint8_t* blocks,
+        size_t code_stride,
+        size_t block_stride);
 
 /** get a single element from a packed codes table
  *
@@ -92,6 +103,8 @@ struct CodePackerPQ4 : CodePacker {
 
     CodePackerPQ4(size_t nsq, size_t bbs);
 
+    CodePacker* clone() const final;
+
     void pack_1(const uint8_t* flat_code, size_t offset, uint8_t* block)
             const final;
     void unpack_1(const uint8_t* block, size_t offset, uint8_t* flat_code)
@@ -101,7 +114,7 @@ struct CodePackerPQ4 : CodePacker {
 /** Pack Look-up table for consumption by the kernel.
  *
  * @param nq      number of queries
- * @param nsq     number of sub-quantizers (muliple of 2)
+ * @param nsq     number of sub-quantizers (multiple of 2)
  * @param src     input array, size (nq, 16)
  * @param dest    output array, size (nq, 16)
  */
@@ -112,12 +125,12 @@ void pq4_pack_LUT(int nq, int nsq, const uint8_t* src, uint8_t* dest);
  * @param nq      number of queries
  * @param nb      number of database elements
  * @param bbs     size of database blocks (multiple of 32)
- * @param nsq     number of sub-quantizers (muliple of 2)
+ * @param nsq     number of sub-quantizers (multiple of 2)
  * @param codes   packed codes array
  * @param LUT     packed look-up table
  * @param scaler  scaler to scale the encoded norm
+ * @param block_stride  stride in bytes between consecutive blocks.
  */
-template <class ResultHandler, class Scaler>
 void pq4_accumulate_loop(
         int nq,
         size_t nb,
@@ -125,8 +138,9 @@ void pq4_accumulate_loop(
         int nsq,
         const uint8_t* codes,
         const uint8_t* LUT,
-        ResultHandler& res,
-        const Scaler& scaler);
+        SIMDResultHandler& res,
+        const NormTableScaler* scaler,
+        size_t block_stride);
 
 /* qbs versions, supported only for bbs=32.
  *
@@ -152,7 +166,7 @@ int pq4_preferred_qbs(int nq);
  *
  * @param qbs     4-bit encoded number of query blocks, the total number of
  *                queries handled (nq) is deduced from it
- * @param nsq     number of sub-quantizers (muliple of 2)
+ * @param nsq     number of sub-quantizers (multiple of 2)
  * @param src     input array, size (nq, 16)
  * @param dest    output array, size (nq, 16)
  * @return nq
@@ -171,21 +185,40 @@ int pq4_pack_LUT_qbs_q_map(
 /** Run accumulation loop.
  *
  * @param qbs     4-bit encoded number of queries
- * @param nb      number of database codes (mutliple of bbs)
+ * @param nb      number of database codes (multiple of bbs)
  * @param nsq     number of sub-quantizers
  * @param codes   encoded database vectors (packed)
  * @param LUT     look-up table (packed)
- * @param res     call-back for the resutls
+ * @param res     call-back for the results
  * @param scaler  scaler to scale the encoded norm
+ * @param block_stride  stride in bytes between consecutive blocks.
  */
-template <class ResultHandler, class Scaler>
 void pq4_accumulate_loop_qbs(
         int qbs,
         size_t nb,
         int nsq,
         const uint8_t* codes,
         const uint8_t* LUT,
-        ResultHandler& res,
-        const Scaler& scaler);
+        SIMDResultHandler& res,
+        const NormTableScaler* scaler,
+        size_t block_stride);
+
+/** Wrapper of pq4_accumulate_loop_qbs using simple StoreResultHandler
+ *  and DummyScaler
+ *
+ * @param nq      number of queries
+ * @param ntotal2 number of database elements (multiple of 32)
+ * @param nsq     number of sub-quantizers (muliple of 2)
+ * @param codes   packed codes array
+ * @param LUT     packed look-up table
+ * @param accu    array to store the results
+ */
+void accumulate_to_mem(
+        int nq,
+        size_t ntotal2,
+        int nsq,
+        const uint8_t* codes,
+        const uint8_t* LUT,
+        uint16_t* accu);
 
 } // namespace faiss

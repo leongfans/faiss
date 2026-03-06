@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,9 +20,7 @@
 #include <faiss/Index2Layer.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/IndexPQ.h>
-#include <faiss/impl/io.h>
 #include <faiss/index_factory.h>
-#include <faiss/index_io.h>
 
 #include <faiss/IndexRowwiseMinMax.h>
 #include <faiss/cppcontrib/SaDecodeKernels.h>
@@ -213,10 +211,9 @@ static void verifyIndex2LevelDecoder(
         // evaluate the error
         double error = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "store_seq"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel << "\t" << error << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\tstore_seq\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel
+                  << "\t" << error << std::endl;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -224,9 +221,9 @@ static void verifyIndex2LevelDecoder(
 
     // generate a random order of points
     std::uniform_int_distribution<uint64_t> un(0, n - 1);
-    std::vector<uint64_t> pointIncidesToDecode(nIterations * n, 0);
+    std::vector<uint64_t> pointIndicesToDecode(nIterations * n, 0);
     for (uint64_t i = 0; i < nIterations * n; i++) {
-        pointIncidesToDecode[i] = un(rng);
+        pointIndicesToDecode[i] = un(rng);
     }
 
     {
@@ -237,7 +234,7 @@ static void verifyIndex2LevelDecoder(
         StopWatch swFaiss;
         for (uint64_t iter = 0; iter < nIterations; iter++) {
             for (uint64_t i = 0; i < n; i++) {
-                const auto pointIdx = pointIncidesToDecode[i + iter * n];
+                const auto pointIdx = pointIndicesToDecode[i + iter * n];
                 index->sa_decode(
                         1,
                         encodedData.data() + pointIdx * codeSize,
@@ -250,7 +247,7 @@ static void verifyIndex2LevelDecoder(
         StopWatch swKernel;
         for (uint64_t iter = 0; iter < nIterations; iter++) {
             for (uint64_t i = 0; i < n; i++) {
-                const auto pointIdx = pointIncidesToDecode[i + iter * n];
+                const auto pointIdx = pointIndicesToDecode[i + iter * n];
                 T::store(
                         pqCoarseCentroidsQ,
                         pqFineCentroidsQ,
@@ -262,11 +259,9 @@ static void verifyIndex2LevelDecoder(
 
         // evaluate the error
         const double error = getError(n, d, outputFaiss, outputKernel1);
-
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "store_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel << "\t" << error << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\tstore_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel
+                  << "\t" << error << std::endl;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -294,14 +289,15 @@ static void verifyIndex2LevelDecoder(
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter++) {
                 const auto pointIdx =
-                        pointIncidesToDecode[i * nIterations + iter];
+                        pointIndicesToDecode[i * nIterations + iter];
                 const auto weight = weights[i * nIterations + iter];
                 index->sa_decode(
                         1,
                         encodedData.data() + pointIdx * codeSize,
                         tempFaiss.data());
-                for (uint64_t j = 0; j < d; j++)
+                for (uint64_t j = 0; j < d; j++) {
                     outputFaiss[i * d + j] += weight * tempFaiss[j];
+                }
             }
         }
         const double timeFaiss = swFaiss.elapsed();
@@ -311,7 +307,7 @@ static void verifyIndex2LevelDecoder(
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter++) {
                 const auto pointIdx =
-                        pointIncidesToDecode[i * nIterations + iter];
+                        pointIndicesToDecode[i * nIterations + iter];
                 const auto weight = weights[i * nIterations + iter];
                 T::accum(
                         pqCoarseCentroidsQ,
@@ -326,20 +322,19 @@ static void verifyIndex2LevelDecoder(
         // evaluate the error
         const double error1 = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel1 << "\t" << error1 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel1
+                  << "\t" << error1 << std::endl;
 
         // kernels: accum 2 points, shared centroids
         StopWatch swKernel2;
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter += 2) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 T::accum(
                         pqCoarseCentroidsQ,
@@ -356,20 +351,19 @@ static void verifyIndex2LevelDecoder(
         // evaluate the error
         const double error2 = getError(n, d, outputFaiss, outputKernel2);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum2_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel2 << "\t" << error2 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum2_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel2
+                  << "\t" << error2 << std::endl;
 
         // kernels: accum 2 points, unique centroids
         StopWatch swKernel2u;
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter += 2) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 T::accum(
                         pqCoarseCentroidsQ,
@@ -388,23 +382,22 @@ static void verifyIndex2LevelDecoder(
         // evaluate the error
         const double error2u = getError(n, d, outputFaiss, outputKernel2u);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum2u_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel2u << "\t" << error2u << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum2u_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel2u
+                  << "\t" << error2u << std::endl;
 
         // kernels: accum 3 points, shared centroids
         StopWatch swKernel3;
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter += 3) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 const auto pointIdx2 =
-                        pointIncidesToDecode[i * nIterations + iter + 2];
+                        pointIndicesToDecode[i * nIterations + iter + 2];
                 const auto weight2 = weights[i * nIterations + iter + 2];
                 T::accum(
                         pqCoarseCentroidsQ,
@@ -423,23 +416,22 @@ static void verifyIndex2LevelDecoder(
         // evaluate the error
         const double error3 = getError(n, d, outputFaiss, outputKernel3);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum3_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel3 << "\t" << error3 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum3_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel3
+                  << "\t" << error3 << std::endl;
 
         // kernels: accum 3 points, unique centroids
         StopWatch swKernel3u;
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter += 3) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 const auto pointIdx2 =
-                        pointIncidesToDecode[i * nIterations + iter + 2];
+                        pointIndicesToDecode[i * nIterations + iter + 2];
                 const auto weight2 = weights[i * nIterations + iter + 2];
                 T::accum(
                         pqCoarseCentroidsQ,
@@ -462,10 +454,9 @@ static void verifyIndex2LevelDecoder(
         // evaluate the error
         const double error3u = getError(n, d, outputFaiss, outputKernel3u);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum3u_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel3u << "\t" << error3u << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum3u_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel3u
+                  << "\t" << error3u << std::endl;
     }
 }
 
@@ -531,10 +522,9 @@ static void verifyMinMaxIndex2LevelDecoder(
         // evaluate the error
         double error = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "store_seq"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel << "\t" << error << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\tstore_seq\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel
+                  << "\t" << error << std::endl;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -542,9 +532,9 @@ static void verifyMinMaxIndex2LevelDecoder(
 
     // generate a random order of points
     std::uniform_int_distribution<uint64_t> un(0, n - 1);
-    std::vector<uint64_t> pointIncidesToDecode(nIterations * n, 0);
+    std::vector<uint64_t> pointIndicesToDecode(nIterations * n, 0);
     for (uint64_t i = 0; i < nIterations * n; i++) {
-        pointIncidesToDecode[i] = un(rng);
+        pointIndicesToDecode[i] = un(rng);
     }
 
     {
@@ -555,7 +545,7 @@ static void verifyMinMaxIndex2LevelDecoder(
         StopWatch swFaiss;
         for (uint64_t iter = 0; iter < nIterations; iter++) {
             for (uint64_t i = 0; i < n; i++) {
-                const auto pointIdx = pointIncidesToDecode[i + iter * n];
+                const auto pointIdx = pointIndicesToDecode[i + iter * n];
                 index->sa_decode(
                         1,
                         encodedData.data() + pointIdx * codeSize,
@@ -568,7 +558,7 @@ static void verifyMinMaxIndex2LevelDecoder(
         StopWatch swKernel;
         for (uint64_t iter = 0; iter < nIterations; iter++) {
             for (uint64_t i = 0; i < n; i++) {
-                const auto pointIdx = pointIncidesToDecode[i + iter * n];
+                const auto pointIdx = pointIndicesToDecode[i + iter * n];
                 T::store(
                         pqCoarseCentroidsQ,
                         pqFineCentroidsQ,
@@ -581,10 +571,9 @@ static void verifyMinMaxIndex2LevelDecoder(
         // evaluate the error
         const double error = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "store_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel << "\t" << error << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\tstore_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel
+                  << "\t" << error << std::endl;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -612,7 +601,7 @@ static void verifyMinMaxIndex2LevelDecoder(
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter++) {
                 const auto pointIdx =
-                        pointIncidesToDecode[i * nIterations + iter];
+                        pointIndicesToDecode[i * nIterations + iter];
                 const auto weight = weights[i * nIterations + iter];
                 index->sa_decode(
                         1,
@@ -631,7 +620,7 @@ static void verifyMinMaxIndex2LevelDecoder(
             float outputAccumMin = 0;
             for (uint64_t iter = 0; iter < nIterations; iter++) {
                 const auto pointIdx =
-                        pointIncidesToDecode[i * nIterations + iter];
+                        pointIndicesToDecode[i * nIterations + iter];
                 const auto weight = weights[i * nIterations + iter];
                 T::accum(
                         pqCoarseCentroidsQ,
@@ -650,10 +639,9 @@ static void verifyMinMaxIndex2LevelDecoder(
         // evaluate the error
         const double error1 = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel1 << "\t" << error1 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel1
+                  << "\t" << error1 << std::endl;
 
         // kernels: accum 2 points, shared centroids
         StopWatch swKernel2;
@@ -661,10 +649,10 @@ static void verifyMinMaxIndex2LevelDecoder(
             float outputAccumMin = 0;
             for (uint64_t iter = 0; iter < nIterations; iter += 2) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 T::accum(
                         pqCoarseCentroidsQ,
@@ -685,10 +673,9 @@ static void verifyMinMaxIndex2LevelDecoder(
         // evaluate the error
         const double error2 = getError(n, d, outputFaiss, outputKernel2);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum2_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel2 << "\t" << error2 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum2_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel2
+                  << "\t" << error2 << std::endl;
 
         // kernels: accum 2 points, unique centroids
         StopWatch swKernel2u;
@@ -696,10 +683,10 @@ static void verifyMinMaxIndex2LevelDecoder(
             float outputAccumMin = 0;
             for (uint64_t iter = 0; iter < nIterations; iter += 2) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 T::accum(
                         pqCoarseCentroidsQ,
@@ -722,10 +709,9 @@ static void verifyMinMaxIndex2LevelDecoder(
         // evaluate the error
         const double error2u = getError(n, d, outputFaiss, outputKernel2u);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum2u_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel2u << "\t" << error2u << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum2u_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel2u
+                  << "\t" << error2u << std::endl;
 
         // kernels: accum 3 points, shared centroids
         StopWatch swKernel3;
@@ -733,13 +719,13 @@ static void verifyMinMaxIndex2LevelDecoder(
             float outputAccumMin = 0;
             for (uint64_t iter = 0; iter < nIterations; iter += 3) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 const auto pointIdx2 =
-                        pointIncidesToDecode[i * nIterations + iter + 2];
+                        pointIndicesToDecode[i * nIterations + iter + 2];
                 const auto weight2 = weights[i * nIterations + iter + 2];
                 T::accum(
                         pqCoarseCentroidsQ,
@@ -762,10 +748,9 @@ static void verifyMinMaxIndex2LevelDecoder(
         // evaluate the error
         const double error3 = getError(n, d, outputFaiss, outputKernel3);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum3_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel3 << "\t" << error3 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum3_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel3
+                  << "\t" << error3 << std::endl;
 
         // kernels: accum 3 points, unique centroids
         StopWatch swKernel3u;
@@ -773,13 +758,13 @@ static void verifyMinMaxIndex2LevelDecoder(
             float outputAccumMin = 0;
             for (uint64_t iter = 0; iter < nIterations; iter += 3) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 const auto pointIdx2 =
-                        pointIncidesToDecode[i * nIterations + iter + 2];
+                        pointIndicesToDecode[i * nIterations + iter + 2];
                 const auto weight2 = weights[i * nIterations + iter + 2];
                 T::accum(
                         pqCoarseCentroidsQ,
@@ -806,10 +791,9 @@ static void verifyMinMaxIndex2LevelDecoder(
         // evaluate the error
         const double error3u = getError(n, d, outputFaiss, outputKernel3u);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum3u_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel3u << "\t" << error3u << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum3u_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel3u
+                  << "\t" << error3u << std::endl;
     }
 }
 
@@ -865,10 +849,9 @@ static void verifyIndexPQDecoder(
         // evaluate the error
         double error = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "store_seq"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel << "\t" << error << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\tstore_seq\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel
+                  << "\t" << error << std::endl;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -876,9 +859,9 @@ static void verifyIndexPQDecoder(
 
     // generate a random order of points
     std::uniform_int_distribution<uint64_t> un(0, n - 1);
-    std::vector<uint64_t> pointIncidesToDecode(nIterations * n, 0);
+    std::vector<uint64_t> pointIndicesToDecode(nIterations * n, 0);
     for (uint64_t i = 0; i < nIterations * n; i++) {
-        pointIncidesToDecode[i] = un(rng);
+        pointIndicesToDecode[i] = un(rng);
     }
 
     {
@@ -889,7 +872,7 @@ static void verifyIndexPQDecoder(
         StopWatch swFaiss;
         for (uint64_t iter = 0; iter < nIterations; iter++) {
             for (uint64_t i = 0; i < n; i++) {
-                const auto pointIdx = pointIncidesToDecode[i + iter * n];
+                const auto pointIdx = pointIndicesToDecode[i + iter * n];
                 index->sa_decode(
                         1,
                         encodedData.data() + pointIdx * codeSize,
@@ -902,7 +885,7 @@ static void verifyIndexPQDecoder(
         StopWatch swKernel;
         for (uint64_t iter = 0; iter < nIterations; iter++) {
             for (uint64_t i = 0; i < n; i++) {
-                const auto pointIdx = pointIncidesToDecode[i + iter * n];
+                const auto pointIdx = pointIndicesToDecode[i + iter * n];
                 T::store(
                         pqFineCentroidsQ,
                         encodedData.data() + pointIdx * codeSize,
@@ -914,10 +897,9 @@ static void verifyIndexPQDecoder(
         // evaluate the error
         const double error = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "store_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel << "\t" << error << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\tstore_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel
+                  << "\t" << error << std::endl;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -945,7 +927,7 @@ static void verifyIndexPQDecoder(
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter++) {
                 const auto pointIdx =
-                        pointIncidesToDecode[i * nIterations + iter];
+                        pointIndicesToDecode[i * nIterations + iter];
                 const auto weight = weights[i * nIterations + iter];
                 index->sa_decode(
                         1,
@@ -963,7 +945,7 @@ static void verifyIndexPQDecoder(
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter++) {
                 const auto pointIdx =
-                        pointIncidesToDecode[i * nIterations + iter];
+                        pointIndicesToDecode[i * nIterations + iter];
                 const auto weight = weights[i * nIterations + iter];
                 T::accum(
                         pqFineCentroidsQ,
@@ -977,20 +959,19 @@ static void verifyIndexPQDecoder(
         // evaluate the error
         const double error1 = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel1 << "\t" << error1 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel1
+                  << "\t" << error1 << std::endl;
 
         // kernels: accum 2 points, shared centroids
         StopWatch swKernel2;
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter += 2) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 T::accum(
                         pqFineCentroidsQ,
@@ -1006,20 +987,19 @@ static void verifyIndexPQDecoder(
         // evaluate the error
         const double error2 = getError(n, d, outputFaiss, outputKernel2);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum2_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel2 << "\t" << error2 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum2_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel2
+                  << "\t" << error2 << std::endl;
 
         // kernels: accum 2 points, unique centroids
         StopWatch swKernel2u;
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter += 2) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 T::accum(
                         pqFineCentroidsQ,
@@ -1036,23 +1016,22 @@ static void verifyIndexPQDecoder(
         // evaluate the error
         const double error2u = getError(n, d, outputFaiss, outputKernel2u);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum2u_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel2u << "\t" << error2u << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum2u_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel2u
+                  << "\t" << error2u << std::endl;
 
         // kernels: accum 3 points, shared centroids
         StopWatch swKernel3;
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter += 3) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 const auto pointIdx2 =
-                        pointIncidesToDecode[i * nIterations + iter + 2];
+                        pointIndicesToDecode[i * nIterations + iter + 2];
                 const auto weight2 = weights[i * nIterations + iter + 2];
                 T::accum(
                         pqFineCentroidsQ,
@@ -1070,23 +1049,22 @@ static void verifyIndexPQDecoder(
         // evaluate the error
         const double error3 = getError(n, d, outputFaiss, outputKernel3);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum3_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel3 << "\t" << error3 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum3_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel3
+                  << "\t" << error3 << std::endl;
 
         // kernels: accum 3 points, unique centroids
         StopWatch swKernel3u;
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter += 3) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 const auto pointIdx2 =
-                        pointIncidesToDecode[i * nIterations + iter + 2];
+                        pointIndicesToDecode[i * nIterations + iter + 2];
                 const auto weight2 = weights[i * nIterations + iter + 2];
                 T::accum(
                         pqFineCentroidsQ,
@@ -1106,10 +1084,9 @@ static void verifyIndexPQDecoder(
         // evaluate the error
         const double error3u = getError(n, d, outputFaiss, outputKernel3u);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum3u_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel3u << "\t" << error3u << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum3u_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel3u
+                  << "\t" << error3u << std::endl;
     }
 }
 
@@ -1170,10 +1147,9 @@ static void verifyMinMaxIndexPQDecoder(
         // evaluate the error
         double error = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "store_seq"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel << "\t" << error << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\tstore_seq\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel
+                  << "\t" << error << std::endl;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1181,9 +1157,9 @@ static void verifyMinMaxIndexPQDecoder(
 
     // generate a random order of points
     std::uniform_int_distribution<uint64_t> un(0, n - 1);
-    std::vector<uint64_t> pointIncidesToDecode(nIterations * n, 0);
+    std::vector<uint64_t> pointIndicesToDecode(nIterations * n, 0);
     for (uint64_t i = 0; i < nIterations * n; i++) {
-        pointIncidesToDecode[i] = un(rng);
+        pointIndicesToDecode[i] = un(rng);
     }
 
     {
@@ -1194,7 +1170,7 @@ static void verifyMinMaxIndexPQDecoder(
         StopWatch swFaiss;
         for (uint64_t iter = 0; iter < nIterations; iter++) {
             for (uint64_t i = 0; i < n; i++) {
-                const auto pointIdx = pointIncidesToDecode[i + iter * n];
+                const auto pointIdx = pointIndicesToDecode[i + iter * n];
                 index->sa_decode(
                         1,
                         encodedData.data() + pointIdx * codeSize,
@@ -1207,7 +1183,7 @@ static void verifyMinMaxIndexPQDecoder(
         StopWatch swKernel;
         for (uint64_t iter = 0; iter < nIterations; iter++) {
             for (uint64_t i = 0; i < n; i++) {
-                const auto pointIdx = pointIncidesToDecode[i + iter * n];
+                const auto pointIdx = pointIndicesToDecode[i + iter * n];
                 T::store(
                         pqFineCentroidsQ,
                         encodedData.data() + pointIdx * codeSize,
@@ -1219,10 +1195,9 @@ static void verifyMinMaxIndexPQDecoder(
         // evaluate the error
         const double error = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "store_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel << "\t" << error << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\tstore_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel
+                  << "\t" << error << std::endl;
     }
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1250,7 +1225,7 @@ static void verifyMinMaxIndexPQDecoder(
         for (uint64_t i = 0; i < n; i++) {
             for (uint64_t iter = 0; iter < nIterations; iter++) {
                 const auto pointIdx =
-                        pointIncidesToDecode[i * nIterations + iter];
+                        pointIndicesToDecode[i * nIterations + iter];
                 const auto weight = weights[i * nIterations + iter];
                 index->sa_decode(
                         1,
@@ -1269,7 +1244,7 @@ static void verifyMinMaxIndexPQDecoder(
             float outputAccumMin = 0;
             for (uint64_t iter = 0; iter < nIterations; iter++) {
                 const auto pointIdx =
-                        pointIncidesToDecode[i * nIterations + iter];
+                        pointIndicesToDecode[i * nIterations + iter];
                 const auto weight = weights[i * nIterations + iter];
                 T::accum(
                         pqFineCentroidsQ,
@@ -1287,10 +1262,9 @@ static void verifyMinMaxIndexPQDecoder(
         // evaluate the error
         const double error1 = getError(n, d, outputFaiss, outputKernel1);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel1 << "\t" << error1 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel1
+                  << "\t" << error1 << std::endl;
 
         // kernels: accum 2 points, shared centroids
         StopWatch swKernel2;
@@ -1298,10 +1272,10 @@ static void verifyMinMaxIndexPQDecoder(
             float outputAccumMin = 0;
             for (uint64_t iter = 0; iter < nIterations; iter += 2) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 T::accum(
                         pqFineCentroidsQ,
@@ -1321,10 +1295,9 @@ static void verifyMinMaxIndexPQDecoder(
         // evaluate the error
         const double error2 = getError(n, d, outputFaiss, outputKernel2);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum2_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel2 << "\t" << error2 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum2_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel2
+                  << "\t" << error2 << std::endl;
 
         // kernels: accum 2 points, unique centroids
         StopWatch swKernel2u;
@@ -1332,10 +1305,10 @@ static void verifyMinMaxIndexPQDecoder(
             float outputAccumMin = 0;
             for (uint64_t iter = 0; iter < nIterations; iter += 2) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 T::accum(
                         pqFineCentroidsQ,
@@ -1356,10 +1329,9 @@ static void verifyMinMaxIndexPQDecoder(
         // evaluate the error
         const double error2u = getError(n, d, outputFaiss, outputKernel2u);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum2u_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel2u << "\t" << error2u << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum2u_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel2u
+                  << "\t" << error2u << std::endl;
 
         // kernels: accum 3 points, shared centroids
         StopWatch swKernel3;
@@ -1367,13 +1339,13 @@ static void verifyMinMaxIndexPQDecoder(
             float outputAccumMin = 0;
             for (uint64_t iter = 0; iter < nIterations; iter += 3) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 const auto pointIdx2 =
-                        pointIncidesToDecode[i * nIterations + iter + 2];
+                        pointIndicesToDecode[i * nIterations + iter + 2];
                 const auto weight2 = weights[i * nIterations + iter + 2];
                 T::accum(
                         pqFineCentroidsQ,
@@ -1395,10 +1367,9 @@ static void verifyMinMaxIndexPQDecoder(
         // evaluate the error
         const double error3 = getError(n, d, outputFaiss, outputKernel3);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum3_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel3 << "\t" << error3 << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum3_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel3
+                  << "\t" << error3 << std::endl;
 
         // kernels: accum 3 points, unique centroids
         StopWatch swKernel3u;
@@ -1406,13 +1377,13 @@ static void verifyMinMaxIndexPQDecoder(
             float outputAccumMin = 0;
             for (uint64_t iter = 0; iter < nIterations; iter += 3) {
                 const auto pointIdx0 =
-                        pointIncidesToDecode[i * nIterations + iter + 0];
+                        pointIndicesToDecode[i * nIterations + iter + 0];
                 const auto weight0 = weights[i * nIterations + iter + 0];
                 const auto pointIdx1 =
-                        pointIncidesToDecode[i * nIterations + iter + 1];
+                        pointIndicesToDecode[i * nIterations + iter + 1];
                 const auto weight1 = weights[i * nIterations + iter + 1];
                 const auto pointIdx2 =
-                        pointIncidesToDecode[i * nIterations + iter + 2];
+                        pointIndicesToDecode[i * nIterations + iter + 2];
                 const auto weight2 = weights[i * nIterations + iter + 2];
                 T::accum(
                         pqFineCentroidsQ,
@@ -1436,10 +1407,9 @@ static void verifyMinMaxIndexPQDecoder(
         // evaluate the error
         const double error3u = getError(n, d, outputFaiss, outputKernel3u);
 
-        std::cout << description << "\t" << n << "\t" << d << "\t"
-                  << "accum3u_rnd"
-                  << "\t" << nIterations << "\t" << timeFaiss << "\t"
-                  << timeKernel3u << "\t" << error3u << std::endl;
+        std::cout << description << "\t" << n << "\t" << d << "\taccum3u_rnd\t"
+                  << nIterations << "\t" << timeFaiss << "\t" << timeKernel3u
+                  << "\t" << error3u << std::endl;
     }
 }
 
@@ -1512,14 +1482,11 @@ int main(int argc, char** argv) {
             (N_ITERATIONS % 6) == 0, "Number of iterations should be 6*x");
 
     // print the header
-    std::cout << "Codec\t"
-              << "n\t"
-              << "d\t"
-              << "Experiment\t"
-              << "Iterations\t"
-              << "Faiss time\t"
-              << "SADecodeKernel time\t"
-              << "Error" << std::endl;
+    auto delim = "\t";
+    std::cout << "Codec" << delim << "n" << delim << "d" << delim
+              << "Experiment" << delim << "Iterations" << delim << "Faiss time"
+              << delim << "SADecodeKernel time" << delim << "Error"
+              << std::endl;
 
     // The following experiment types are available:
     // * store_seq - decode a contiguous block of codes into vectors, one by one

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -24,26 +24,13 @@ namespace quantize_lut {
 
 namespace {
 
-float round_uint8_and_mul(float* tab, size_t n) {
-    float max = 0;
-    for (int i = 0; i < n; i++) {
-        if (fabs(tab[i]) > max) {
-            max = fabs(tab[i]);
-        }
-    }
-    float multiplier = 127 / max;
-    for (int i = 0; i < n; i++) {
-        tab[i] = floorf(tab[i] * multiplier + 128);
-    }
-    return multiplier;
-}
-
 // there can be NaNs in tables, they should be ignored
 float tab_min(const float* tab, size_t n) {
     float min = HUGE_VAL;
     for (int i = 0; i < n; i++) {
-        if (tab[i] < min)
+        if (tab[i] < min) {
             min = tab[i];
+        }
     }
     return min;
 }
@@ -51,8 +38,9 @@ float tab_min(const float* tab, size_t n) {
 float tab_max(const float* tab, size_t n) {
     float max = -HUGE_VAL;
     for (int i = 0; i < n; i++) {
-        if (tab[i] > max)
+        if (tab[i] > max) {
             max = tab[i];
+        }
     }
     return max;
 }
@@ -93,10 +81,12 @@ void round_uint8_per_column(
         b += mins[i];
         round_tab(tab + i * d, d, a, mins[i]);
     }
-    if (a_out)
+    if (a_out) {
         *a_out = a;
-    if (b_out)
+    }
+    if (b_out) {
         *b_out = b;
+    }
 }
 
 void round_uint8_per_column_multi(
@@ -129,14 +119,16 @@ void round_uint8_per_column_multi(
             round_tab(tab + (j * n + i) * d, d, a, mins[i]);
         }
     }
-    if (a_out)
+    if (a_out) {
         *a_out = a;
-    if (b_out)
+    }
+    if (b_out) {
         *b_out = b;
+    }
 }
 
 // translation of
-// https://github.com/fairinternal/faiss_improvements/blob/7122c3cc6ddb0a371d8aa6f1309cd8bcf2335e61/LUT_quantization.ipynb
+// https://gist.github.com/mdouze/f3a05bff5186c1874a77356452297357#file-lut_quantization-ipynb
 void quantize_LUT_and_bias(
         size_t nprobe,
         size_t M,
@@ -278,10 +270,12 @@ void quantize_LUT_and_bias(
             ij_2 += M2 - M;
         }
     }
-    if (a_out)
+    if (a_out) {
         *a_out = a;
-    if (b_out)
+    }
+    if (b_out) {
         *b_out = b;
+    }
 }
 
 void aq_quantize_LUT_and_bias(

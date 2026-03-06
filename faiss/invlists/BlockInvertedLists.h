@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -15,11 +15,12 @@
 namespace faiss {
 
 struct CodePacker;
+struct IDSelector;
 
 /** Inverted Lists that are organized by blocks.
  *
  * Different from the regular inverted lists, the codes are organized by blocks
- * of size block_size bytes that reprsent a set of n_per_block. Therefore, code
+ * of size block_size bytes that represent a set of n_per_block. Therefore, code
  * allocations are always rounded up to block_size bytes. The codes are also
  * aligned on 32-byte boundaries for use with SIMD.
  *
@@ -47,6 +48,8 @@ struct BlockInvertedLists : InvertedLists {
     size_t list_size(size_t list_no) const override;
     const uint8_t* get_codes(size_t list_no) const override;
     const idx_t* get_ids(size_t list_no) const override;
+    /// remove ids from the InvertedLists
+    size_t remove_ids(const IDSelector& sel);
 
     // works only on empty BlockInvertedLists
     // the codes should be of size ceil(n_entry / n_per_block) * block_size

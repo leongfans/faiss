@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,14 +9,9 @@
 
 #include <faiss/IndexNNDescent.h>
 
-#include <omp.h>
-
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
-
-#include <queue>
-#include <unordered_set>
 
 #ifdef __SSE__
 #endif
@@ -24,9 +19,8 @@
 #include <faiss/IndexFlat.h>
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
-#include <faiss/utils/Heap.h>
+#include <faiss/impl/VisitedTable.h>
 #include <faiss/utils/distances.h>
-#include <faiss/utils/random.h>
 
 extern "C" {
 
@@ -57,35 +51,6 @@ using storage_idx_t = NNDescent::storage_idx_t;
  **************************************************************/
 
 namespace {
-
-/* Wrap the distance computer into one that negates the
-   distances. This makes supporting INNER_PRODUCE search easier */
-
-struct NegativeDistanceComputer : DistanceComputer {
-    /// owned by this
-    DistanceComputer* basedis;
-
-    explicit NegativeDistanceComputer(DistanceComputer* basedis)
-            : basedis(basedis) {}
-
-    void set_query(const float* x) override {
-        basedis->set_query(x);
-    }
-
-    /// compute distance of vector i to current query
-    float operator()(idx_t i) override {
-        return -(*basedis)(i);
-    }
-
-    /// compute distance between two stored vectors
-    float symmetric_dis(idx_t i, idx_t j) override {
-        return -basedis->symmetric_dis(i, j);
-    }
-
-    ~NegativeDistanceComputer() override {
-        delete basedis;
-    }
-};
 
 DistanceComputer* storage_distance_computer(const Index* storage) {
     if (is_similarity_metric(storage->metric_type)) {
@@ -190,7 +155,7 @@ void IndexNNDescent::add(idx_t n, const float* x) {
 
     if (ntotal != 0) {
         fprintf(stderr,
-                "WARNING NNDescent doest not support dynamic insertions,"
+                "WARNING NNDescent does not support dynamic insertions,"
                 "multiple insertions would lead to re-building the index");
     }
 

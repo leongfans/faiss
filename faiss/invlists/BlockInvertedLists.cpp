@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,8 +7,11 @@
 
 #include <faiss/invlists/BlockInvertedLists.h>
 
+#include <memory>
+
 #include <faiss/impl/CodePacker.h>
 #include <faiss/impl/FaissAssert.h>
+#include <faiss/impl/IDSelector.h>
 
 #include <faiss/impl/io.h>
 #include <faiss/impl/io_macros.h>
@@ -54,7 +57,9 @@ size_t BlockInvertedLists::add_entries(
     codes[list_no].resize(n_block * block_size);
     if (o % block_size == 0) {
         // copy whole blocks
-        memcpy(&codes[list_no][o * code_size], code, n_block * block_size);
+        memcpy(&codes[list_no][o * packer->code_size],
+               code,
+               n_block * block_size);
     } else {
         FAISS_THROW_IF_NOT_MSG(packer, "missing code packer");
         std::vector<uint8_t> buffer(packer->code_size);
@@ -74,6 +79,30 @@ size_t BlockInvertedLists::list_size(size_t list_no) const {
 const uint8_t* BlockInvertedLists::get_codes(size_t list_no) const {
     assert(list_no < nlist);
     return codes[list_no].get();
+}
+
+size_t BlockInvertedLists::remove_ids(const IDSelector& sel) {
+    idx_t nremove = 0;
+#pragma omp parallel for reduction(+ : nremove)
+    for (idx_t i = 0; i < nlist; i++) {
+        std::vector<uint8_t> buffer(packer->code_size);
+        idx_t l = ids[i].size(), j = 0;
+        while (j < l) {
+            if (sel.is_member(ids[i][j])) {
+                l--;
+                ids[i][j] = ids[i][l];
+                packer->unpack_1(codes[i].data(), l, buffer.data());
+                packer->pack_1(buffer.data(), j, codes[i].data());
+            } else {
+                j++;
+            }
+        }
+        idx_t orig_size = ids[i].size();
+        resize(i, l);
+        nremove += orig_size - l;
+    }
+
+    return nremove;
 }
 
 const idx_t* BlockInvertedLists::get_ids(size_t list_no) const {
@@ -101,13 +130,7 @@ void BlockInvertedLists::update_entries(
         size_t,
         const idx_t*,
         const uint8_t*) {
-    FAISS_THROW_MSG("not impemented");
-    /*
-    assert (list_no < nlist);
-    assert (n_entry + offset <= ids[list_no].size());
-    memcpy (&ids[list_no][offset], ids_in, sizeof(ids_in[0]) * n_entry);
-    memcpy (&codes[list_no][offset * code_size], codes_in, code_size * n_entry);
-    */
+    FAISS_THROW_MSG("not implemented");
 }
 
 BlockInvertedLists::~BlockInvertedLists() {
@@ -140,7 +163,7 @@ void BlockInvertedListsIOHook::write(const InvertedLists* ils_in, IOWriter* f)
 
 InvertedLists* BlockInvertedListsIOHook::read(IOReader* f, int /* io_flags */)
         const {
-    BlockInvertedLists* il = new BlockInvertedLists();
+    auto il = std::make_unique<BlockInvertedLists>();
     READ1(il->nlist);
     READ1(il->code_size);
     READ1(il->n_per_block);
@@ -154,7 +177,7 @@ InvertedLists* BlockInvertedListsIOHook::read(IOReader* f, int /* io_flags */)
         READVECTOR(il->codes[i]);
     }
 
-    return il;
+    return il.release();
 }
 
 } // namespace faiss

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,6 +7,7 @@
 
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexIVF.h>
+#include <faiss/clone_index.h>
 #include <faiss/gpu/GpuCloner.h>
 #include <faiss/gpu/GpuIndexFlat.h>
 #include <faiss/gpu/GpuIndexIVF.h>
@@ -15,11 +16,7 @@
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/gpu/impl/IVFBase.cuh>
 #include <faiss/gpu/utils/CopyUtils.cuh>
-
-#if defined USE_NVIDIA_RAFT
-#include <raft/core/handle.hpp>
-#include <raft/neighbors/ivf_flat.cuh>
-#endif
+#include "GpuIndexIVF.h"
 
 namespace faiss {
 namespace gpu {
@@ -79,9 +76,9 @@ void GpuIndexIVF::init_() {
     }
 
     // here we set a low # iterations because this is typically used
-    // for large clusterings
-    // (copying IndexIVF.cpp's Level1Quantizer
+    // for large clusterings (copying IndexIVF.cpp's Level1Quantizer
     cp.niter = 10;
+
     cp.verbose = verbose;
 
     if (quantizer) {
@@ -96,6 +93,7 @@ void GpuIndexIVF::init_() {
         GpuIndexFlatConfig config = ivfConfig_.flatConfig;
         // inherit our same device
         config.device = config_.device;
+        config.use_cuvs = config_.use_cuvs;
 
         if (metric_type == faiss::METRIC_L2) {
             quantizer = new GpuIndexFlatL2(resources_, d, config);
@@ -157,7 +155,7 @@ void GpuIndexIVF::copyFrom(const faiss::IndexIVF* index) {
     FAISS_ASSERT(index->nlist > 0);
     nlist = index->nlist;
 
-    validateNProbe(index->nprobe);
+    validateNProbe(index->nprobe, should_use_cuvs(config_));
     nprobe = index->nprobe;
 
     // The metric type may have changed as well, so we might have to
@@ -176,10 +174,29 @@ void GpuIndexIVF::copyFrom(const faiss::IndexIVF* index) {
         // over to the GPU, on the same device that we are on.
         GpuResourcesProviderFromInstance pfi(getResources());
 
-        GpuClonerOptions options;
-        auto cloner = ToGpuCloner(&pfi, getDevice(), options);
-
-        quantizer = cloner.clone_Index(index->quantizer);
+        // Attempt to clone the index to GPU. If it fails because the coarse
+        // quantizer is not implemented on GPU and the flag to allow CPU
+        // fallback is set, retry it with CPU cloner and re-throw errors.
+        try {
+            GpuClonerOptions options;
+            auto cloner = ToGpuCloner(&pfi, getDevice(), options);
+            quantizer = cloner.clone_Index(index->quantizer);
+        } catch (const std::exception& e) {
+            if (strstr(e.what(), "not implemented on GPU")) {
+                if (ivfConfig_.allowCpuCoarseQuantizer) {
+                    Cloner cpuCloner;
+                    quantizer = cpuCloner.clone_Index(index->quantizer);
+                } else {
+                    FAISS_THROW_MSG(
+                            "This index type is not implemented on "
+                            "GPU and allowCpuCoarseQuantizer is set to false. "
+                            "Please set the flag to true to allow the CPU "
+                            "fallback in cloning.");
+                }
+            } else {
+                throw;
+            }
+        }
         own_fields = true;
     } else {
         // Otherwise, this is a GPU coarse quantizer index instance found in a
@@ -301,7 +318,7 @@ int GpuIndexIVF::getCurrentNProbe_(const SearchParameters* params) const {
         }
     }
 
-    validateNProbe(use_nprobe);
+    validateNProbe(use_nprobe, should_use_cuvs(config_));
     // We use int internally for nprobe
     return int(use_nprobe);
 }
@@ -351,7 +368,7 @@ void GpuIndexIVF::search_preassigned(
     FAISS_THROW_IF_NOT_MSG(this->is_trained, "GpuIndexIVF not trained");
     FAISS_ASSERT(baseIndex_);
 
-    validateKSelect(k);
+    validateKSelect(k, should_use_cuvs(config_));
 
     if (n == 0 || k == 0) {
         // nothing to search
@@ -359,7 +376,7 @@ void GpuIndexIVF::search_preassigned(
     }
 
     idx_t use_nprobe = params ? params->nprobe : this->nprobe;
-    validateNProbe(use_nprobe);
+    validateNProbe(use_nprobe, should_use_cuvs(config_));
 
     size_t max_codes = params ? params->max_codes : this->max_codes;
     FAISS_THROW_IF_NOT_FMT(
@@ -451,43 +468,12 @@ void GpuIndexIVF::trainQuantizer_(idx_t n, const float* x) {
 
     quantizer->reset();
 
-#if defined USE_NVIDIA_RAFT
+    // leverage the CPU-side k-means code, which works for the GPU
+    // flat index as well
+    Clustering clus(this->d, nlist, this->cp);
+    clus.verbose = verbose;
+    clus.train(n, x, *quantizer);
 
-    if (config_.use_raft) {
-        const raft::device_resources& raft_handle =
-                resources_->getRaftHandleCurrentDevice();
-
-        raft::neighbors::ivf_flat::index_params raft_idx_params;
-        raft_idx_params.n_lists = nlist;
-        raft_idx_params.metric = metric_type == faiss::METRIC_L2
-                ? raft::distance::DistanceType::L2Expanded
-                : raft::distance::DistanceType::InnerProduct;
-        raft_idx_params.add_data_on_build = false;
-        raft_idx_params.kmeans_trainset_fraction = 1.0;
-        raft_idx_params.kmeans_n_iters = cp.niter;
-        raft_idx_params.adaptive_centers = !cp.frozen_centroids;
-
-        auto raft_index = raft::neighbors::ivf_flat::build(
-                raft_handle, raft_idx_params, x, n, (idx_t)d);
-
-        raft_handle.sync_stream();
-
-        quantizer->train(nlist, raft_index.centers().data_handle());
-        quantizer->add(nlist, raft_index.centers().data_handle());
-    } else
-#else
-    if (config_.use_raft) {
-        FAISS_THROW_MSG(
-                "RAFT has not been compiled into the current version so it cannot be used.");
-    } else
-#endif
-    {
-        // leverage the CPU-side k-means code, which works for the GPU
-        // flat index as well
-        Clustering clus(this->d, nlist, this->cp);
-        clus.verbose = verbose;
-        clus.train(n, x, *quantizer);
-    }
     quantizer->is_trained = true;
     FAISS_ASSERT(quantizer->ntotal == nlist);
 }

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -19,7 +19,6 @@
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/utils/hamming.h>
-#include <faiss/utils/utils.h>
 
 namespace faiss {
 
@@ -28,8 +27,15 @@ IndexIVFSpectralHash::IndexIVFSpectralHash(
         size_t d,
         size_t nlist,
         int nbit,
-        float period)
-        : IndexIVF(quantizer, d, nlist, (nbit + 7) / 8, METRIC_L2),
+        float period,
+        bool own_invlists)
+        : IndexIVF(
+                  quantizer,
+                  d,
+                  nlist,
+                  (nbit + 7) / 8,
+                  METRIC_L2,
+                  own_invlists),
           nbit(nbit),
           period(period) {
     RandomRotationMatrix* rr = new RandomRotationMatrix(d, nbit);
@@ -157,7 +163,7 @@ void binarize_with_freq(
     }
 }
 
-}; // namespace
+} // namespace
 
 void IndexIVFSpectralHash::encode_vectors(
         idx_t n,
@@ -302,7 +308,8 @@ struct BuildScanner {
 
 InvertedListScanner* IndexIVFSpectralHash::get_InvertedListScanner(
         bool store_pairs,
-        const IDSelector* sel) const {
+        const IDSelector* sel,
+        const IVFSearchParameters*) const {
     FAISS_THROW_IF_NOT(!sel);
     BuildScanner bs;
     return dispatch_HammingComputer(code_size, bs, this, store_pairs);
@@ -324,7 +331,7 @@ void IndexIVFSpectralHash::replace_vt(VectorTransform* vt_in, bool own) {
 /*
     Check that the encoder is a single vector transform followed by a LSH
     that just does thresholding.
-    If this is not the case, the linear transform + threhsolds of the IndexLSH
+    If this is not the case, the linear transform + thresholds of the IndexLSH
     should be merged into the VectorTransform (which is feasible).
 */
 

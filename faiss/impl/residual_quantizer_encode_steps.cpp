@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,6 +10,7 @@
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/impl/ResidualQuantizer.h>
+#include <faiss/impl/simd_dispatch.h>
 #include <faiss/utils/Heap.h>
 #include <faiss/utils/distances.h>
 #include <faiss/utils/simdlib.h>
@@ -95,7 +96,7 @@ void accum_and_store_tab(
         for (size_t ij = 1; ij < M; ij++) {
             reg += cbs[ij][kk];
         }
-        output[b * K + kk] = reg;
+        output[kk] = reg;
     }
 }
 
@@ -152,7 +153,7 @@ void accum_and_add_tab(
         for (size_t ij = 1; ij < M; ij++) {
             reg += cbs[ij][kk];
         }
-        output[b * K + kk] += reg;
+        output[kk] += reg;
     }
 }
 
@@ -292,8 +293,8 @@ void beam_search_encode_step(
                     cent_ids.data() + i * beam_size * new_beam_size;
 
             // here we could be a tad more efficient by merging sorted arrays
-            for (int i = 0; i < new_beam_size; i++) {
-                new_distances_i[i] = C::neutral();
+            for (int j = 0; j < new_beam_size; j++) {
+                new_distances_i[j] = C::neutral();
             }
             std::vector<int> perm(new_beam_size, -1);
             heap_addn<C>(
@@ -325,8 +326,8 @@ void beam_search_encode_step(
             const float* cent_distances_i =
                     cent_distances.data() + i * beam_size * K;
             // then we have to select the best results
-            for (int i = 0; i < new_beam_size; i++) {
-                new_distances_i[i] = C::neutral();
+            for (int j = 0; j < new_beam_size; j++) {
+                new_distances_i[j] = C::neutral();
             }
             std::vector<int> perm(new_beam_size, -1);
 
@@ -558,8 +559,8 @@ void beam_search_encode_step_tab(
         const float* cent_distances_i = cent_distances.data();
 
         // then we have to select the best results
-        for (int i = 0; i < new_beam_size; i++) {
-            new_distances_i[i] = C::neutral();
+        for (int j = 0; j < new_beam_size; j++) {
+            new_distances_i[j] = C::neutral();
         }
         std::vector<int> perm(new_beam_size, -1);
 
@@ -664,8 +665,6 @@ void refine_beam_mp(
     std::unique_ptr<Index> assign_index;
     if (rq.assign_index_factory) {
         assign_index.reset((*rq.assign_index_factory)(rq.d));
-    } else {
-        assign_index.reset(new IndexFlatL2(rq.d));
     }
 
     // main loop
@@ -701,7 +700,9 @@ void refine_beam_mp(
                 assign_index.get(),
                 rq.approx_topk_mode);
 
-        assign_index->reset();
+        if (assign_index != nullptr) {
+            assign_index->reset();
+        }
 
         std::swap(codes_ptr, new_codes_ptr);
         std::swap(residuals_ptr, new_residuals_ptr);
@@ -809,7 +810,7 @@ void refine_beam_LUT_mp(
                 rq.codebook_offsets.data(),
                 query_cp + rq.codebook_offsets[m],
                 rq.total_codebook_size,
-                rq.cent_norms.data() + rq.codebook_offsets[m],
+                rq.centroid_norms.data() + rq.codebook_offsets[m],
                 m,
                 codes_ptr,
                 distances_ptr,
@@ -877,12 +878,14 @@ void compute_codes_add_centroids_mp_lut0(
         pool.norms.resize(n);
         // recover the norms of reconstruction as
         // || original_vector - residual ||^2
-        for (size_t i = 0; i < n; i++) {
-            pool.norms[i] = fvec_L2sqr(
-                    x + i * rq.d,
-                    pool.residuals.data() + i * rq.max_beam_size * rq.d,
-                    rq.d);
-        }
+        with_simd_level([&]<SIMDLevel SL>() {
+            for (size_t i = 0; i < n; i++) {
+                pool.norms[i] = fvec_L2sqr<SL>(
+                        x + i * rq.d,
+                        pool.residuals.data() + i * rq.max_beam_size * rq.d,
+                        rq.d);
+            }
+        });
     }
 
     // pack only the first code of the beam

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -123,21 +123,20 @@ void accumulate_fixed_blocks(
         const uint8_t* codes,
         const uint8_t* LUT,
         ResultHandler& res,
-        const Scaler& scaler) {
+        const Scaler& scaler,
+        size_t block_stride) {
     constexpr int bbs = 32 * BB;
     for (size_t j0 = 0; j0 < nb; j0 += bbs) {
         FixedStorageHandler<NQ, 2 * BB> res2;
         kernel_accumulate_block<NQ, BB>(nsq, codes, LUT, res2, scaler);
         res.set_block_origin(0, j0);
         res2.to_other_handler(res);
-        codes += bbs * nsq / 2;
+        codes += block_stride;
     }
 }
 
-} // anonymous namespace
-
 template <class ResultHandler, class Scaler>
-void pq4_accumulate_loop(
+void pq4_accumulate_loop_fixed_scaler(
         int nq,
         size_t nb,
         int bbs,
@@ -145,15 +144,17 @@ void pq4_accumulate_loop(
         const uint8_t* codes,
         const uint8_t* LUT,
         ResultHandler& res,
-        const Scaler& scaler) {
+        const Scaler& scaler,
+        size_t block_stride) {
     FAISS_THROW_IF_NOT(is_aligned_pointer(codes));
     FAISS_THROW_IF_NOT(is_aligned_pointer(LUT));
     FAISS_THROW_IF_NOT(bbs % 32 == 0);
     FAISS_THROW_IF_NOT(nb % bbs == 0);
 
-#define DISPATCH(NQ, BB)                                                   \
-    case NQ * 1000 + BB:                                                   \
-        accumulate_fixed_blocks<NQ, BB>(nb, nsq, codes, LUT, res, scaler); \
+#define DISPATCH(NQ, BB)                                         \
+    case NQ * 1000 + BB:                                         \
+        accumulate_fixed_blocks<NQ, BB>(                         \
+                nb, nsq, codes, LUT, res, scaler, block_stride); \
         break
 
     switch (nq * 1000 + bbs / 32) {
@@ -172,39 +173,58 @@ void pq4_accumulate_loop(
 #undef DISPATCH
 }
 
-// explicit template instantiations
+template <class ResultHandler>
+void pq4_accumulate_loop_fixed_handler(
+        int nq,
+        size_t nb,
+        int bbs,
+        int nsq,
+        const uint8_t* codes,
+        const uint8_t* LUT,
+        ResultHandler& res,
+        const NormTableScaler* scaler,
+        size_t block_stride) {
+    if (scaler) {
+        pq4_accumulate_loop_fixed_scaler(
+                nq, nb, bbs, nsq, codes, LUT, res, *scaler, block_stride);
+    } else {
+        DummyScaler dscaler;
+        pq4_accumulate_loop_fixed_scaler(
+                nq, nb, bbs, nsq, codes, LUT, res, dscaler, block_stride);
+    }
+}
 
-#define INSTANTIATE_ACCUMULATE(TH, C, with_id_map, S)         \
-    template void pq4_accumulate_loop<TH<C, with_id_map>, S>( \
-            int,                                              \
-            size_t,                                           \
-            int,                                              \
-            int,                                              \
-            const uint8_t*,                                   \
-            const uint8_t*,                                   \
-            TH<C, with_id_map>&,                              \
-            const S&);
+struct Run_pq4_accumulate_loop {
+    template <class ResultHandler>
+    void f(ResultHandler& res,
+           int nq,
+           size_t nb,
+           int bbs,
+           int nsq,
+           const uint8_t* codes,
+           const uint8_t* LUT,
+           const NormTableScaler* scaler,
+           size_t block_stride) {
+        pq4_accumulate_loop_fixed_handler(
+                nq, nb, bbs, nsq, codes, LUT, res, scaler, block_stride);
+    }
+};
 
-using DS = DummyScaler;
-using NS = NormTableScaler;
+} // anonymous namespace
 
-#define INSTANTIATE_3(C, with_id_map)                               \
-    INSTANTIATE_ACCUMULATE(SingleResultHandler, C, with_id_map, DS) \
-    INSTANTIATE_ACCUMULATE(HeapHandler, C, with_id_map, DS)         \
-    INSTANTIATE_ACCUMULATE(ReservoirHandler, C, with_id_map, DS)    \
-                                                                    \
-    INSTANTIATE_ACCUMULATE(SingleResultHandler, C, with_id_map, NS) \
-    INSTANTIATE_ACCUMULATE(HeapHandler, C, with_id_map, NS)         \
-    INSTANTIATE_ACCUMULATE(ReservoirHandler, C, with_id_map, NS)
-
-using Csi = CMax<uint16_t, int>;
-INSTANTIATE_3(Csi, false);
-using CsiMin = CMin<uint16_t, int>;
-INSTANTIATE_3(CsiMin, false);
-
-using Csl = CMax<uint16_t, int64_t>;
-INSTANTIATE_3(Csl, true);
-using CslMin = CMin<uint16_t, int64_t>;
-INSTANTIATE_3(CslMin, true);
+void pq4_accumulate_loop(
+        int nq,
+        size_t nb,
+        int bbs,
+        int nsq,
+        const uint8_t* codes,
+        const uint8_t* LUT,
+        SIMDResultHandler& res,
+        const NormTableScaler* scaler,
+        size_t block_stride) {
+    Run_pq4_accumulate_loop consumer;
+    dispatch_SIMDResultHandler(
+            res, consumer, nq, nb, bbs, nsq, codes, LUT, scaler, block_stride);
+}
 
 } // namespace faiss

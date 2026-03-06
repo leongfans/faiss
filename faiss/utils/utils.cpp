@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,14 +7,14 @@
 
 // -*- c++ -*-
 
+#include <faiss/Index.h>
+#include <faiss/utils/simd_levels.h>
 #include <faiss/utils/utils.h>
 
 #include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-
-#include <sys/types.h>
 
 #ifdef _MSC_VER
 #define NOMINMAX
@@ -34,7 +34,6 @@
 
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
-#include <faiss/impl/platform_macros.h>
 #include <faiss/utils/random.h>
 
 #ifndef FINTEGER
@@ -104,7 +103,10 @@ int sgemv_(
 namespace faiss {
 
 // this will be set at load time from GPU Faiss
-std::string gpu_compile_options;
+std::string& ref_gpu_compile_options() {
+    static std::string gpu_compile_options;
+    return gpu_compile_options;
+}
 
 std::string get_compile_options() {
     std::string options;
@@ -114,19 +116,35 @@ std::string get_compile_options() {
     options += "OPTIMIZE ";
 #endif
 
-#ifdef __AVX2__
-    options += "AVX2 ";
-#elif __AVX512F__
-    options += "AVX512";
-#elif defined(__aarch64__)
-    options += "NEON ";
+#ifdef FAISS_ENABLE_DD
+    // Dynamic Dispatch mode: report DD and all available SIMD levels
+    options += "DD ";
+    int supported = SIMDConfig::supported_simd_levels;
+    for (int i = 0; i < static_cast<int>(SIMDLevel::COUNT); ++i) {
+        auto level = static_cast<SIMDLevel>(i);
+        if ((supported & (1 << i)) && level != SIMDLevel::NONE) {
+            options += to_string(level) + " ";
+        }
+    }
 #else
-    options += "GENERIC ";
+    // Static mode: report the compiled-in SIMD level
+    SIMDLevel level = SIMDConfig::get_level();
+    if (level != SIMDLevel::NONE) {
+        options += to_string(level) + " ";
+    }
 #endif
 
-    options += gpu_compile_options;
+#ifdef FAISS_ENABLE_SVS
+    options += "SVS ";
+#endif
+
+    options += ref_gpu_compile_options();
 
     return options;
+}
+
+std::string get_version() {
+    return VERSION_STRING;
 }
 
 #ifdef _MSC_VER
@@ -380,7 +398,7 @@ size_t ranklist_intersection_size(
     return count;
 }
 
-double imbalance_factor(int k, const int* hist) {
+double imbalance_factor(int k, const int64_t* hist) {
     double tot = 0, uf = 0;
 
     for (int i = 0; i < k; i++) {
@@ -392,9 +410,9 @@ double imbalance_factor(int k, const int* hist) {
     return uf;
 }
 
-double imbalance_factor(int n, int k, const int64_t* assign) {
-    std::vector<int> hist(k, 0);
-    for (int i = 0; i < n; i++) {
+double imbalance_factor(int64_t n, int k, const int64_t* assign) {
+    std::vector<int64_t> hist(k, 0);
+    for (int64_t i = 0; i < n; i++) {
         hist[assign[i]]++;
     }
 
@@ -582,9 +600,9 @@ int64_t count_gt(int64_t n, const T* row, T threshold) {
 } // namespace
 
 template <typename T>
-void CombinerRangeKNN<T>::compute_sizes(int64_t* L_res) {
-    this->L_res = L_res;
-    L_res[0] = 0;
+void CombinerRangeKNN<T>::compute_sizes(int64_t* L_res_init) {
+    this->L_res = L_res_init;
+    L_res_init[0] = 0;
     int64_t j = 0;
     for (int64_t i = 0; i < nq; i++) {
         int64_t n_in;
@@ -595,11 +613,11 @@ void CombinerRangeKNN<T>::compute_sizes(int64_t* L_res) {
             n_in = lim_remain[j + 1] - lim_remain[j];
             j++;
         }
-        L_res[i + 1] = n_in; // L_res[i] + n_in;
+        L_res_init[i + 1] = n_in; // L_res_init[i] + n_in;
     }
     // cumsum
     for (int64_t i = 0; i < nq; i++) {
-        L_res[i + 1] += L_res[i];
+        L_res_init[i + 1] += L_res_init[i];
     }
 }
 

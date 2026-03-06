@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,11 +20,11 @@ namespace faiss {
  * IO functions
  ***********************************************************************/
 
-int IOReader::fileno() {
+int IOReader::filedescriptor() {
     FAISS_THROW_MSG("IOReader does not support memory mapping");
 }
 
-int IOWriter::fileno() {
+int IOWriter::filedescriptor() {
     FAISS_THROW_MSG("IOWriter does not support memory mapping");
 }
 
@@ -43,11 +43,13 @@ size_t VectorIOWriter::operator()(const void* ptr, size_t size, size_t nitems) {
 }
 
 size_t VectorIOReader::operator()(void* ptr, size_t size, size_t nitems) {
-    if (rp >= data.size())
+    if (rp >= data.size()) {
         return 0;
+    }
     size_t nremain = (data.size() - rp) / size;
-    if (nremain < nitems)
+    if (nremain < nitems) {
         nitems = nremain;
+    }
     if (size * nitems > 0) {
         memcpy(ptr, &data[rp], size * nitems);
         rp += size * nitems;
@@ -72,7 +74,7 @@ FileIOReader::FileIOReader(const char* fname) {
 FileIOReader::~FileIOReader() {
     if (need_close) {
         int ret = fclose(f);
-        if (ret != 0) { // we cannot raise and exception in the destructor
+        if (ret != 0) { // we cannot raise an exception in the destructor
             fprintf(stderr,
                     "file %s close error: %s",
                     name.c_str(),
@@ -85,8 +87,12 @@ size_t FileIOReader::operator()(void* ptr, size_t size, size_t nitems) {
     return fread(ptr, size, nitems, f);
 }
 
-int FileIOReader::fileno() {
+int FileIOReader::filedescriptor() {
+#ifdef _AIX
+    return fileno(f);
+#else
     return ::fileno(f);
+#endif
 }
 
 FileIOWriter::FileIOWriter(FILE* wf) : f(wf) {}
@@ -103,7 +109,7 @@ FileIOWriter::~FileIOWriter() {
     if (need_close) {
         int ret = fclose(f);
         if (ret != 0) {
-            // we cannot raise and exception in the destructor
+            // we cannot raise an exception in the destructor
             fprintf(stderr,
                     "file %s close error: %s",
                     name.c_str(),
@@ -116,8 +122,12 @@ size_t FileIOWriter::operator()(const void* ptr, size_t size, size_t nitems) {
     return fwrite(ptr, size, nitems, f);
 }
 
-int FileIOWriter::fileno() {
+int FileIOWriter::filedescriptor() {
+#ifdef _AIX
+    return fileno(f);
+#else
     return ::fileno(f);
+#endif
 }
 
 /***********************************************************************
@@ -135,8 +145,9 @@ BufferedIOReader::BufferedIOReader(IOReader* reader, size_t bsz)
 
 size_t BufferedIOReader::operator()(void* ptr, size_t unitsize, size_t nitems) {
     size_t size = unitsize * nitems;
-    if (size == 0)
+    if (size == 0) {
         return 0;
+    }
     char* dst = (char*)ptr;
     size_t nb;
 
@@ -181,8 +192,9 @@ size_t BufferedIOWriter::operator()(
         size_t unitsize,
         size_t nitems) {
     size_t size = unitsize * nitems;
-    if (size == 0)
+    if (size == 0) {
         return 0;
+    }
     const char* src = (const char*)ptr;
     size_t nb;
 
@@ -196,13 +208,13 @@ size_t BufferedIOWriter::operator()(
     while (size > 0) {
         assert(b0 == bsz);
         // now we need to flush to add more bytes
-        size_t ofs = 0;
+        size_t ofs_2 = 0;
         do {
-            assert(ofs < 10000000);
-            size_t written = (*writer)(buffer.data() + ofs, 1, bsz - ofs);
+            assert(ofs_2 < 10000000);
+            size_t written = (*writer)(buffer.data() + ofs_2, 1, bsz - ofs_2);
             FAISS_THROW_IF_NOT(written > 0);
-            ofs += written;
-        } while (ofs != bsz);
+            ofs_2 += written;
+        } while (ofs_2 != bsz);
 
         // copy src to buffer
         size_t nb1 = std::min(bsz, size);
@@ -217,12 +229,12 @@ size_t BufferedIOWriter::operator()(
 }
 
 BufferedIOWriter::~BufferedIOWriter() {
-    size_t ofs = 0;
-    while (ofs != b0) {
-        // printf("Destructor write %zd \n", b0 - ofs);
-        size_t written = (*writer)(buffer.data() + ofs, 1, b0 - ofs);
+    size_t ofs_2 = 0;
+    while (ofs_2 != b0) {
+        // printf("Destructor write %zd \n", b0 - ofs_2);
+        size_t written = (*writer)(buffer.data() + ofs_2, 1, b0 - ofs_2);
         FAISS_THROW_IF_NOT(written > 0);
-        ofs += written;
+        ofs_2 += written;
     }
 }
 
@@ -252,14 +264,14 @@ std::string fourcc_inv(uint32_t x) {
 std::string fourcc_inv_printable(uint32_t x) {
     char cstr[5];
     fourcc_inv(x, cstr);
-    std::string str = "";
+    std::string str;
     for (int i = 0; i < 4; i++) {
         uint8_t c = cstr[i];
         if (32 <= c && c < 127) {
             str += c;
         } else {
             char buf[10];
-            sprintf(buf, "\\x%02x", c);
+            snprintf(buf, sizeof(buf), "\\x%02x", c);
             str += buf;
         }
     }

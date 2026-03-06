@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -11,6 +11,7 @@
 
 #include <cinttypes>
 
+#include <faiss/impl/simd_dispatch.h>
 #include <faiss/utils/Heap.h>
 #include <faiss/utils/distances.h>
 #include <faiss/utils/utils.h>
@@ -30,8 +31,16 @@ IndexIVFPQR::IndexIVFPQR(
         size_t M,
         size_t nbits_per_idx,
         size_t M_refine,
-        size_t nbits_per_idx_refine)
-        : IndexIVFPQ(quantizer, d, nlist, M, nbits_per_idx),
+        size_t nbits_per_idx_refine,
+        bool own_invlists)
+        : IndexIVFPQ(
+                  quantizer,
+                  d,
+                  nlist,
+                  M,
+                  nbits_per_idx,
+                  METRIC_L2,
+                  own_invlists),
           refine_pq(d, M_refine, nbits_per_idx_refine),
           k_factor(4) {
     by_residual = true;
@@ -91,7 +100,8 @@ void IndexIVFPQR::add_core(
         idx_t n,
         const float* x,
         const idx_t* xids,
-        const idx_t* precomputed_idx) {
+        const idx_t* precomputed_idx,
+        void* /*inverted_list_context*/) {
     std::unique_ptr<float[]> residual_2(new float[n * d]);
 
     idx_t n0 = ntotal;
@@ -119,7 +129,7 @@ void IndexIVFPQR::search_preassigned(
         IndexIVFStats* stats) const {
     uint64_t t0;
     TIC;
-    size_t k_coarse = long(k * k_factor);
+    size_t k_coarse = long((size_t)k * k_factor);
     std::unique_ptr<idx_t[]> coarse_labels(new idx_t[k_coarse * n]);
     {
         // query with quantizer levels 1 and 2.
@@ -159,8 +169,9 @@ void IndexIVFPQR::search_preassigned(
             for (int j = 0; j < k_coarse; j++) {
                 idx_t sl = shortlist[j];
 
-                if (sl == -1)
+                if (sl == -1) {
                     continue;
+                }
 
                 int list_no = lo_listno(sl);
                 int ofs = lo_offset(sl);
@@ -175,8 +186,9 @@ void IndexIVFPQR::search_preassigned(
                 const uint8_t* l2code = invlists->get_single_code(list_no, ofs);
 
                 pq.decode(l2code, residual_2);
-                for (int l = 0; l < d; l++)
+                for (int l = 0; l < d; l++) {
                     residual_2[l] = residual_1[l] - residual_2[l];
+                }
 
                 // 3rd level residual's approximation
                 idx_t id = invlists->get_single_id(list_no, ofs);

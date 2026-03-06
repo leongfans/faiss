@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -12,6 +12,7 @@
 #include <faiss/IndexIVFAdditiveQuantizer.h>
 #include <faiss/IndexIVFFastScan.h>
 #include <faiss/impl/AdditiveQuantizer.h>
+#include <faiss/impl/FastScanDistancePostProcessing.h>
 #include <faiss/impl/ProductAdditiveQuantizer.h>
 #include <faiss/utils/AlignedTable.h>
 
@@ -36,13 +37,13 @@ namespace faiss {
 struct IndexIVFAdditiveQuantizerFastScan : IndexIVFFastScan {
     using Search_type_t = AdditiveQuantizer::Search_type_t;
 
-    AdditiveQuantizer* aq;
+    AdditiveQuantizer* aq{};
 
     bool rescale_norm = false;
     int norm_scale = 1;
 
     // max number of training vectors
-    size_t max_train_points;
+    size_t max_train_points{};
 
     IndexIVFAdditiveQuantizerFastScan(
             Index* quantizer,
@@ -50,9 +51,15 @@ struct IndexIVFAdditiveQuantizerFastScan : IndexIVFFastScan {
             size_t d,
             size_t nlist,
             MetricType metric = METRIC_L2,
-            int bbs = 32);
+            int bbs = 32,
+            bool own_invlists = true);
 
-    void init(AdditiveQuantizer* aq, size_t nlist, MetricType metric, int bbs);
+    void init(
+            AdditiveQuantizer* aq,
+            size_t nlist,
+            MetricType metric,
+            int bbs,
+            bool own_invlists);
 
     IndexIVFAdditiveQuantizerFastScan();
 
@@ -93,12 +100,10 @@ struct IndexIVFAdditiveQuantizerFastScan : IndexIVFFastScan {
     void compute_LUT(
             size_t n,
             const float* x,
-            const idx_t* coarse_ids,
-            const float* coarse_dis,
+            const CoarseQuantized& cq,
             AlignedTable<float>& dis_tables,
-            AlignedTable<float>& biases) const override;
-
-    void sa_decode(idx_t n, const uint8_t* bytes, float* x) const override;
+            AlignedTable<float>& biases,
+            const FastScanDistancePostProcessing& context) const override;
 };
 
 struct IndexIVFLocalSearchQuantizerFastScan
@@ -113,7 +118,8 @@ struct IndexIVFLocalSearchQuantizerFastScan
             size_t nbits,
             MetricType metric = METRIC_L2,
             Search_type_t search_type = AdditiveQuantizer::ST_norm_lsq2x4,
-            int bbs = 32);
+            int bbs = 32,
+            bool own_invlists = true);
 
     IndexIVFLocalSearchQuantizerFastScan();
 };
@@ -129,7 +135,8 @@ struct IndexIVFResidualQuantizerFastScan : IndexIVFAdditiveQuantizerFastScan {
             size_t nbits,
             MetricType metric = METRIC_L2,
             Search_type_t search_type = AdditiveQuantizer::ST_norm_lsq2x4,
-            int bbs = 32);
+            int bbs = 32,
+            bool own_invlists = true);
 
     IndexIVFResidualQuantizerFastScan();
 };
@@ -147,7 +154,8 @@ struct IndexIVFProductLocalSearchQuantizerFastScan
             size_t nbits,
             MetricType metric = METRIC_L2,
             Search_type_t search_type = AdditiveQuantizer::ST_norm_lsq2x4,
-            int bbs = 32);
+            int bbs = 32,
+            bool own_invlists = true);
 
     IndexIVFProductLocalSearchQuantizerFastScan();
 };
@@ -165,7 +173,8 @@ struct IndexIVFProductResidualQuantizerFastScan
             size_t nbits,
             MetricType metric = METRIC_L2,
             Search_type_t search_type = AdditiveQuantizer::ST_norm_lsq2x4,
-            int bbs = 32);
+            int bbs = 32,
+            bool own_invlists = true);
 
     IndexIVFProductResidualQuantizerFastScan();
 };

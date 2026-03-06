@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,25 +7,23 @@
 
 #include <faiss/IndexIVFPQFastScan.h>
 
+#include <array>
 #include <cassert>
-#include <cinttypes>
 #include <cstdio>
-
-#include <omp.h>
 
 #include <memory>
 
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
+#include <faiss/utils/Heap.h>
 #include <faiss/utils/distances.h>
+#include <faiss/utils/extra_distances.h>
 #include <faiss/utils/simdlib.h>
-#include <faiss/utils/utils.h>
 
 #include <faiss/invlists/BlockInvertedLists.h>
 
 #include <faiss/impl/pq4_fast_scan.h>
 #include <faiss/impl/simd_result_handlers.h>
-#include <faiss/utils/quantize_lut.h>
 
 namespace faiss {
 
@@ -42,11 +40,13 @@ IndexIVFPQFastScan::IndexIVFPQFastScan(
         size_t M,
         size_t nbits,
         MetricType metric,
-        int bbs)
-        : IndexIVFFastScan(quantizer, d, nlist, 0, metric), pq(d, M, nbits) {
+        int bbs,
+        bool own_invlists)
+        : IndexIVFFastScan(quantizer, d, nlist, 0, metric, own_invlists),
+          pq(d, M, nbits) {
     by_residual = false; // set to false by default because it's faster
 
-    init_fastscan(M, nbits, nlist, metric, bbs);
+    init_fastscan(&pq, M, nbits, nlist, metric, bbs, own_invlists);
 }
 
 IndexIVFPQFastScan::IndexIVFPQFastScan() {
@@ -61,11 +61,19 @@ IndexIVFPQFastScan::IndexIVFPQFastScan(const IndexIVFPQ& orig, int bbs)
                   orig.d,
                   orig.nlist,
                   orig.pq.code_size,
-                  orig.metric_type),
+                  orig.metric_type,
+                  orig.own_invlists),
           pq(orig.pq) {
     FAISS_THROW_IF_NOT(orig.pq.nbits == 4);
 
-    init_fastscan(orig.pq.M, orig.pq.nbits, orig.nlist, orig.metric_type, bbs);
+    init_fastscan(
+            &pq,
+            orig.pq.M,
+            orig.pq.nbits,
+            orig.nlist,
+            orig.metric_type,
+            bbs,
+            orig.own_invlists);
 
     by_residual = orig.by_residual;
     ntotal = orig.ntotal;
@@ -80,7 +88,8 @@ IndexIVFPQFastScan::IndexIVFPQFastScan(const IndexIVFPQ& orig, int bbs)
                precomputed_table.nbytes());
     }
 
-    for (size_t i = 0; i < nlist; i++) {
+#pragma omp parallel for if (nlist > 100)
+    for (idx_t i = 0; i < nlist; i++) {
         size_t nb = orig.invlists->list_size(i);
         size_t nb2 = roundup(nb, bbs);
         AlignedTable<uint8_t> tmp(nb2 * M2 / 2);
@@ -171,7 +180,7 @@ void IndexIVFPQFastScan::encode_vectors(
  * Look-Up Table functions
  *********************************************************/
 
-void fvec_madd_avx(
+void fvec_madd_simd(
         size_t n,
         const float* a,
         float bf,
@@ -202,12 +211,13 @@ bool IndexIVFPQFastScan::lookup_table_is_3d() const {
 void IndexIVFPQFastScan::compute_LUT(
         size_t n,
         const float* x,
-        const idx_t* coarse_ids,
-        const float* coarse_dis,
+        const CoarseQuantized& cq,
         AlignedTable<float>& dis_tables,
-        AlignedTable<float>& biases) const {
+        AlignedTable<float>& biases,
+        const FastScanDistancePostProcessing&) const {
     size_t dim12 = pq.ksub * pq.M;
     size_t d = pq.d;
+    size_t nprobe = cq.nprobe;
 
     if (by_residual) {
         if (metric_type == METRIC_L2) {
@@ -215,7 +225,7 @@ void IndexIVFPQFastScan::compute_LUT(
 
             if (use_precomputed_table == 1) {
                 biases.resize(n * nprobe);
-                memcpy(biases.get(), coarse_dis, sizeof(float) * n * nprobe);
+                memcpy(biases.get(), cq.dis, sizeof(float) * n * nprobe);
 
                 AlignedTable<float> ip_table(n * dim12);
                 pq.compute_inner_prod_tables(n, x, ip_table.get());
@@ -224,10 +234,10 @@ void IndexIVFPQFastScan::compute_LUT(
                 for (idx_t ij = 0; ij < n * nprobe; ij++) {
                     idx_t i = ij / nprobe;
                     float* tab = dis_tables.get() + ij * dim12;
-                    idx_t cij = coarse_ids[ij];
+                    idx_t cij = cq.ids[ij];
 
                     if (cij >= 0) {
-                        fvec_madd_avx(
+                        fvec_madd_simd(
                                 dim12,
                                 precomputed_table.get() + cij * dim12,
                                 -2,
@@ -249,7 +259,7 @@ void IndexIVFPQFastScan::compute_LUT(
                 for (idx_t ij = 0; ij < n * nprobe; ij++) {
                     idx_t i = ij / nprobe;
                     float* xij = &xrel[ij * d];
-                    idx_t cij = coarse_ids[ij];
+                    idx_t cij = cq.ids[ij];
 
                     if (cij >= 0) {
                         quantizer->compute_residual(x + i * d, xij, cij);
@@ -269,7 +279,7 @@ void IndexIVFPQFastScan::compute_LUT(
             // compute_inner_prod_tables(pq, n, x, dis_tables.get());
 
             biases.resize(n * nprobe);
-            memcpy(biases.get(), coarse_dis, sizeof(float) * n * nprobe);
+            memcpy(biases.get(), cq.dis, sizeof(float) * n * nprobe);
         } else {
             FAISS_THROW_FMT("metric %d not supported", metric_type);
         }
@@ -286,9 +296,164 @@ void IndexIVFPQFastScan::compute_LUT(
     }
 }
 
-void IndexIVFPQFastScan::sa_decode(idx_t n, const uint8_t* bytes, float* x)
-        const {
-    pq.decode(bytes, x, n);
+/*********************************************************
+ * InvertedListScanner for IVFPQFS
+ *********************************************************/
+
+namespace {
+
+struct IVFPQFastScanScanner : InvertedListScanner {
+    static constexpr int impl = 10; // based on search_implem_10
+    static constexpr size_t nq = 1; // 1 query at a time.
+    const IndexIVFPQFastScan& index;
+    AlignedTable<uint8_t> dis_tables;
+    AlignedTable<uint16_t> biases;
+    std::vector<float> residual;
+    std::array<float, 2> normalizers{};
+    const float* xi = nullptr;
+
+    IVFPQFastScanScanner(
+            const IndexIVFPQFastScan& index,
+            bool store_pairs,
+            const IDSelector* sel)
+            : InvertedListScanner(store_pairs, sel), index(index) {
+        this->keep_max = is_similarity_metric(index.metric_type);
+        residual.resize(index.d);
+    }
+
+    void set_query(const float* query) override {
+        this->xi = query;
+    }
+
+    void set_list(idx_t list_no, float coarse_dis) override {
+        this->list_no = list_no;
+        IndexIVFFastScan::CoarseQuantized cq{
+                .nprobe = 1,        // 1 due to explicitly passing in list_no
+                .dis = &coarse_dis, // dis from query to list_no centroid.
+                .ids = &list_no,    // id of the current list we are scanning
+        };
+        FastScanDistancePostProcessing empty_context{};
+        index.compute_LUT_uint8(
+                1, xi, cq, dis_tables, biases, &normalizers[0], empty_context);
+        // used in distance_to_code
+        index.quantizer->compute_residual(
+                this->xi, residual.data(), this->list_no);
+    }
+
+    float distance_to_code(const uint8_t* code) const override {
+        // directly use the PQ tables to compute the distance
+        const ProductQuantizer& pq = index.pq;
+        // when by_residual, codes are residuals so compare against query
+        // residual; otherwise codes are raw vectors so compare against raw
+        // query
+        const float* x = index.by_residual ? residual.data() : this->xi;
+        float accu = 0;
+        // implemented for all vector distances, although only L2 and IP are
+        // suppored by FastScan
+        with_VectorDistance(pq.dsub, index.metric_type, 0.0, [&](auto vd) {
+            int m;
+            for (m = 0; m + 1 < pq.M; m += 2) {
+                const float* cent;
+                uint8_t c = *code++;
+                cent = pq.get_centroids(m, c & 15);
+                accu += vd(cent, x);
+                x += pq.dsub;
+                cent = pq.get_centroids(m + 1, c >> 4);
+                accu += vd(cent, x);
+                x += pq.dsub;
+            }
+            if (m < pq.M) { // leftover
+                uint8_t c = *code++;
+                const float* cent = pq.get_centroids(m, c & 15);
+                accu += vd(cent, x);
+            }
+        });
+        return accu;
+    }
+
+    // Based on IVFFastScan search_implem_10, since it also deals with 1 query
+    // at a time.
+    size_t scan_codes(
+            size_t ntotal,
+            const uint8_t* codes,
+            const idx_t* ids,
+            float* distances,
+            idx_t* labels,
+            size_t k) const override {
+        // initialize the current iteration heap to the worst possible value of
+        // the prior loop
+        std::vector<float> curr_dists(k, distances[0]);
+        std::vector<idx_t> curr_labels(k, labels[0]);
+        FastScanDistancePostProcessing empty_context{};
+        std::unique_ptr<SIMDResultHandlerToFloat> handler(
+                index.make_knn_handler(
+                        !keep_max,
+                        impl,
+                        nq,
+                        k,
+                        curr_dists.data(),
+                        curr_labels.data(),
+                        sel,
+                        empty_context,
+                        &normalizers[0]));
+
+        // This does not quite match search_implem_10, but it is fine because
+        // the scanner operates on a single query at a time, and this value is
+        // used as the query index. For a single query, the value is always 0.
+        int qmap1[1] = {0};
+
+        handler->q_map = qmap1;
+        handler->begin(&normalizers[0]);
+
+        const uint8_t* LUT = dis_tables.get();
+        handler->dbias = biases.get();
+
+        handler->ntotal = ntotal;
+        handler->id_map = ids;
+
+        pq4_accumulate_loop(
+                1,
+                roundup(ntotal, index.bbs),
+                index.bbs,
+                static_cast<int>(index.M2),
+                codes,
+                LUT,
+                *handler,
+                nullptr,
+                index.get_block_stride());
+
+        // The handler is for the results of this iteration.
+        // Then we need a second heap to combine across iterations.
+        handler->end();
+        if (keep_max) {
+            minheap_addn(
+                    k,
+                    distances,
+                    labels,
+                    curr_dists.data(),
+                    curr_labels.data(),
+                    k);
+        } else {
+            maxheap_addn(
+                    k,
+                    distances,
+                    labels,
+                    curr_dists.data(),
+                    curr_labels.data(),
+                    k);
+        }
+
+        return handler->num_updates();
+    }
+};
+
+} // anonymous namespace
+
+InvertedListScanner* IndexIVFPQFastScan::get_InvertedListScanner(
+        bool store_pairs,
+        const IDSelector* sel,
+        const IVFSearchParameters*) const {
+    return new IVFPQFastScanScanner(*this, store_pairs, sel);
 }
 
 } // namespace faiss

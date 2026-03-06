@@ -1,22 +1,26 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
 #include <faiss/IndexFlat.h>
+#include <faiss/gpu/GpuIndex.h>
 #include <faiss/gpu/GpuIndexFlat.h>
 #include <faiss/gpu/GpuResources.h>
 #include <faiss/gpu/impl/IndexUtils.h>
 #include <faiss/gpu/utils/DeviceUtils.h>
 #include <faiss/gpu/utils/StaticUtils.h>
 #include <faiss/gpu/impl/FlatIndex.cuh>
-#include <faiss/gpu/impl/RaftFlatIndex.cuh>
 #include <faiss/gpu/utils/ConversionOperators.cuh>
 #include <faiss/gpu/utils/CopyUtils.cuh>
 #include <faiss/gpu/utils/Float16.cuh>
 #include <limits>
+
+#if defined USE_NVIDIA_CUVS
+#include <faiss/gpu/impl/CuvsFlatIndex.cuh>
+#endif
 
 namespace faiss {
 namespace gpu {
@@ -89,19 +93,19 @@ GpuIndexFlat::GpuIndexFlat(
 GpuIndexFlat::~GpuIndexFlat() {}
 
 void GpuIndexFlat::resetIndex_(int dims) {
-#if defined USE_NVIDIA_RAFT
+#if defined USE_NVIDIA_CUVS
 
-    if (flatConfig_.use_raft) {
-        data_.reset(new RaftFlatIndex(
+    if (should_use_cuvs(config_)) {
+        data_.reset(new CuvsFlatIndex(
                 resources_.get(),
                 dims,
                 flatConfig_.useFloat16,
                 config_.memorySpace));
     } else
 #else
-    if (flatConfig_.use_raft) {
+    if (should_use_cuvs(config_)) {
         FAISS_THROW_MSG(
-                "RAFT has not been compiled into the current version so it cannot be used.");
+                "cuVS has not been compiled into the current version so it cannot be used.");
     } else
 #endif
     {

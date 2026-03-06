@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -6,8 +6,6 @@
 
 import unittest
 import time
-import os
-import tempfile
 
 import numpy as np
 import faiss
@@ -16,6 +14,7 @@ from faiss.contrib import datasets
 
 # the tests tend to timeout in stress modes + dev otherwise
 faiss.omp_set_num_threads(4)
+
 
 class TestSearch(unittest.TestCase):
 
@@ -34,7 +33,6 @@ class TestSearch(unittest.TestCase):
         nq = Iref.shape[0]
         recall_at_1 = (Iref[:, 0] == Ia[:, 0]).sum() / nq
         assert recall_at_1 > 0.6
-        # print(f'recall@1 = {recall_at_1:.3f}')
 
 
     # This is an experiment to see if we can catch performance
@@ -43,11 +41,16 @@ class TestSearch(unittest.TestCase):
     # hopefully the jitter in executtion time will not produce
     # too many spurious test failures. Unoptimized timings are
     # not exploitable, hence the flag test on that as well.
+    # TODO(DD): Add DD dispatch to fast_scan (pq4_fast_scan.cpp) and remove
+    # the "DD" exclusion below. Currently fast_scan is compiled with SSE4-only
+    # flags in DD mode, so it doesn't benefit from AVX2/AVX512 SIMD.
     @unittest.skipUnless(
         ('AVX2' in faiss.get_compile_options() or
+        'AVX512' in faiss.get_compile_options() or
         'NEON' in faiss.get_compile_options()) and
-        "OPTIMIZE" in faiss.get_compile_options(),
-        "only test while building with avx2 or neon")
+        "OPTIMIZE" in faiss.get_compile_options() and
+        "DD" not in faiss.get_compile_options(),
+        "only test in static mode with avx2 or neon (DD lacks fast_scan dispatch)")
     def test_PQ4_speed(self):
         ds  = datasets.SyntheticDataset(32, 2000, 5000, 1000)
         xt = ds.get_train()
@@ -183,6 +186,8 @@ def reference_accu(codes, LUT):
 
 
 # disabled because the function to write to mem is not implemented currently
+
+
 class ThisIsNotATestLoop5:    # (unittest.TestCase):
 
     def do_loop5_kernel(self, nq, bb):
@@ -498,7 +503,6 @@ class TestAQFastScan(unittest.TestCase):
         recall_ref = (Iref == gt).sum() / nq
         recall = (Ia == gt).sum() / nq
 
-        print(aq, st, implem, metric_type, recall_ref, recall)
         assert abs(recall_ref - recall) < 0.05
 
     def xx_test_accuracy(self):
@@ -521,7 +525,6 @@ class TestAQFastScan(unittest.TestCase):
         index = faiss.index_factory(d, 'RQ8x4' + st, metric_type)
         index.train(ds.get_train())
         index.add(ds.get_database())
-        index.nprobe = 16
         Dref, Iref = index.search(ds.get_queries(), 1)
 
         indexfs = faiss.IndexAdditiveQuantizerFastScan(index)
@@ -531,7 +534,6 @@ class TestAQFastScan(unittest.TestCase):
         nq = Iref.shape[0]
         recall_ref = (Iref == gt).sum() / nq
         recall1 = (I1 == gt).sum() / nq
-        print(recall_ref, recall1)
         assert abs(recall_ref - recall1) < 0.05
 
     def xx_test_from_idxaq(self):
@@ -587,16 +589,9 @@ class TestAQFastScan(unittest.TestCase):
         index.add(ds.get_database())
         D1, I1 = index.search(ds.get_queries(), 1)
 
-        fd, fname = tempfile.mkstemp()
-        os.close(fd)
-        try:
-            faiss.write_index(index, fname)
-            index2 = faiss.read_index(fname)
-            D2, I2 = index2.search(ds.get_queries(), 1)
-            np.testing.assert_array_equal(I1, I2)
-        finally:
-            if os.path.exists(fname):
-                os.unlink(fname)
+        index2 = faiss.deserialize_index(faiss.serialize_index(index))
+        D2, I2 = index2.search(ds.get_queries(), 1)
+        np.testing.assert_array_equal(I1, I2)
 
     def test_io(self):
         self.subtest_io('LSQ4x4fs_Nlsq2x4')
@@ -685,16 +680,9 @@ class TestPAQFastScan(unittest.TestCase):
         index.add(ds.get_database())
         D1, I1 = index.search(ds.get_queries(), 1)
 
-        fd, fname = tempfile.mkstemp()
-        os.close(fd)
-        try:
-            faiss.write_index(index, fname)
-            index2 = faiss.read_index(fname)
-            D2, I2 = index2.search(ds.get_queries(), 1)
-            np.testing.assert_array_equal(I1, I2)
-        finally:
-            if os.path.exists(fname):
-                os.unlink(fname)
+        index2 = faiss.deserialize_index(faiss.serialize_index(index))
+        D2, I2 = index2.search(ds.get_queries(), 1)
+        np.testing.assert_array_equal(I1, I2)
 
     def test_io(self):
         self.subtest_io('PLSQ2x3x4fs_Nlsq2x4')

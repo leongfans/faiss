@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -11,9 +11,6 @@
 #define FAISS_INDEX_IVF_H
 
 #include <stdint.h>
-#include <memory>
-#include <unordered_map>
-#include <vector>
 
 #include <faiss/Clustering.h>
 #include <faiss/Index.h>
@@ -72,6 +69,8 @@ struct SearchParametersIVF : SearchParameters {
     size_t nprobe = 1;    ///< number of probes at query time
     size_t max_codes = 0; ///< max nb of codes to visit to do a query
     SearchParameters* quantizer_params = nullptr;
+    /// context object to pass to InvertedLists
+    void* inverted_list_context = nullptr;
 
     virtual ~SearchParametersIVF() {}
 };
@@ -158,7 +157,7 @@ struct IndexIVFInterface : Level1Quantizer {
  * index maps to a list (aka inverted list or posting list), where the
  * id of the vector is stored.
  *
- * The inverted list object is required only after trainng. If none is
+ * The inverted list object is required only after training. If none is
  * set externally, an ArrayInvertedLists is used automatically.
  *
  * At search time, the vector to be searched is also quantized, and
@@ -169,7 +168,7 @@ struct IndexIVFInterface : Level1Quantizer {
  * lists are visited.
  *
  * Sub-classes implement a post-filtering of the index that refines
- * the distance estimation from the query to databse vectors.
+ * the distance estimation from the query to database vectors.
  */
 struct IndexIVF : Index, IndexIVFInterface {
     /// Access to the actual data
@@ -208,7 +207,8 @@ struct IndexIVF : Index, IndexIVFInterface {
             size_t d,
             size_t nlist,
             size_t code_size,
-            MetricType metric = METRIC_L2);
+            MetricType metric = METRIC_L2,
+            bool own_invlists = true);
 
     void reset() override;
 
@@ -232,7 +232,8 @@ struct IndexIVF : Index, IndexIVFInterface {
             idx_t n,
             const float* x,
             const idx_t* xids,
-            const idx_t* precomputed_idx);
+            const idx_t* precomputed_idx,
+            void* inverted_list_context = nullptr);
 
     /** Encodes a set of vectors as they would appear in the inverted lists
      *
@@ -250,12 +251,27 @@ struct IndexIVF : Index, IndexIVFInterface {
             uint8_t* codes,
             bool include_listno = false) const = 0;
 
+    /** Decodes a set of vectors as they would appear in a given set of inverted
+     * lists (inverse of encode_vectors)
+     *
+     * @param codes      input codes, size n * code_size
+     * @param x          output decoded vectors
+     * @param list_nos   input listnos, size n
+     *
+     */
+    virtual void decode_vectors(
+            idx_t n,
+            const uint8_t* codes,
+            const idx_t* list_nos,
+            float* x) const;
+
     /** Add vectors that are computed with the standalone codec
      *
      * @param codes  codes to add size n * sa_code_size()
      * @param xids   corresponding ids, size n
      */
-    void add_sa_codes(idx_t n, const uint8_t* codes, const idx_t* xids);
+    void add_sa_codes(idx_t n, const uint8_t* codes, const idx_t* xids)
+            override;
 
     /** Train the encoder for the vectors.
      *
@@ -306,13 +322,22 @@ struct IndexIVF : Index, IndexIVFInterface {
             RangeSearchResult* result,
             const SearchParameters* params = nullptr) const override;
 
+    /** search one vector with a custom result handler */
+    void search1(
+            const float* x,
+            ResultHandler& handler,
+            SearchParameters* params = nullptr) const override;
+
     /** Get a scanner for this index (store_pairs means ignore labels)
      *
-     * The default search implementation uses this to compute the distances
+     * The default search implementation uses this to compute the distances.
+     * Use sel instead of params->sel, because sel is initialized with
+     * params->sel, but may get overridden by IndexIVF's internal logic.
      */
     virtual InvertedListScanner* get_InvertedListScanner(
             bool store_pairs = false,
-            const IDSelector* sel = nullptr) const;
+            const IDSelector* sel = nullptr,
+            const IVFSearchParameters* params = nullptr) const;
 
     /** reconstruct a vector. Works only if maintain_direct_map is set to 1 or 2
      */
@@ -430,6 +455,14 @@ struct IndexIVF : Index, IndexIVFInterface {
 
     /* The standalone codec interface (except sa_decode that is specific) */
     size_t sa_code_size() const override;
+
+    /** encode a set of vectors
+     * sa_encode will call encode_vectors with include_listno=true
+     * @param n      nb of vectors to encode
+     * @param x      the vectors to encode
+     * @param bytes  output array for the codes
+     * @return nb of bytes written to codes
+     */
     void sa_encode(idx_t n, const float* x, uint8_t* bytes) const override;
 
     IndexIVF();
@@ -462,17 +495,17 @@ struct InvertedListScanner {
     virtual void set_query(const float* query_vector) = 0;
 
     /// following codes come from this inverted list
-    virtual void set_list(idx_t list_no, float coarse_dis) = 0;
+    virtual void set_list(idx_t list_no, float coarse_dis);
 
     /// compute a single query-to-code distance
     virtual float distance_to_code(const uint8_t* code) const = 0;
 
-    /** scan a set of codes, compute distances to current query and
-     * update heap of results if necessary. Default implemetation
+    /** scan a set of codes, compute distances to current query, and
+     * update heap of results if necessary. Default implementation
      * calls distance_to_code.
      *
-     * @param n      number of codes to scan
-     * @param codes  codes to scan (n * code_size)
+     * @param n          number of codes to scan
+     * @param codes      codes to scan (n * code_size)
      * @param ids        corresponding ids (ignored if store_pairs)
      * @param distances  heap distances (size k)
      * @param labels     heap labels (size k)
@@ -512,6 +545,13 @@ struct InvertedListScanner {
             float radius,
             RangeQueryResult& result,
             size_t& list_size) const;
+
+    // accumulate results with a ResultHandler
+    virtual size_t scan_codes(
+            size_t n,
+            const uint8_t* codes,
+            const idx_t* ids,
+            ResultHandler& handler) const;
 
     virtual ~InvertedListScanner() {}
 };

@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -62,6 +62,10 @@ void CodePackerFlat::unpack_1(
         uint8_t* flat_code) const {
     assert(offset == 0);
     unpack_all(block, flat_code);
+}
+
+CodePacker* CodePackerFlat::clone() const {
+    return new CodePackerFlat(*this);
 }
 
 } // namespace faiss

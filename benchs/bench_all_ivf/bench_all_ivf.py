@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -104,14 +104,12 @@ def eval_setting(index, xq, gt, k, inter, min_time):
 # Training
 ######################################################
 
-def run_train(args, ds, res):
-    nq, d = ds.nq, ds.d
-    nb, d = ds.nq, ds.d
 
+def run_train(args, ds, res):
     print("build index, key=", args.indexkey)
 
     index = faiss.index_factory(
-        d, args.indexkey, faiss.METRIC_L2 if ds.metric == "L2" else
+        ds.d, args.indexkey, faiss.METRIC_L2 if ds.metric == "L2" else
         faiss.METRIC_INNER_PRODUCT
     )
 
@@ -234,6 +232,7 @@ def run_train(args, ds, res):
 ######################################################
 # Populating index
 ######################################################
+
 
 def run_add(args, ds, index, res):
 
@@ -397,6 +396,7 @@ def run_search(args, ds, index, res):
 ######################################################
 # Driver function
 ######################################################
+
 
 def main():
 

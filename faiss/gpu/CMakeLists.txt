@@ -1,10 +1,11 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# @lint-ignore-every LICENSELINT
+# Copyright (c) Meta Platforms, Inc. and its affiliates.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 # =============================================================================
-# Copyright (c) 2023, NVIDIA CORPORATION.
+# Copyright (c) 2023-2024, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
 # in compliance with the License. You may obtain a copy of the License at
@@ -168,6 +169,15 @@ set(FAISS_GPU_HEADERS
   utils/warpselect/WarpSelectImpl.cuh
 )
 
+set(CUDA_LIBS CUDA::cudart CUDA::cublas)
+if(FAISS_GPU_STATIC)
+  if(FAISS_ENABLE_ROCM)
+    message(WARNING "Linking ROCm staticcally is unsupported at the time. Continuing with dynamic linking.")
+  else()
+    set(CUDA_LIBS CUDA::cudart_static CUDA::cublas_static)
+  endif()
+endif()
+
 function(generate_ivf_interleaved_code)
   set(SUB_CODEC_TYPE
     "faiss::gpu::Codec<0, 1>"
@@ -197,6 +207,10 @@ function(generate_ivf_interleaved_code)
     "64|2048|8"
   )
 
+  if (FAISS_ENABLE_ROCM)
+     list(TRANSFORM FAISS_GPU_SRC REPLACE cu$ hip)
+  endif()
+
   # Traverse through the Cartesian product of X and Y
   foreach(sub_codec ${SUB_CODEC_TYPE})
   foreach(metric_type ${SUB_METRIC_TYPE})
@@ -210,10 +224,10 @@ function(generate_ivf_interleaved_code)
     set(filename "template_${sub_codec}_${metric_type}_${sub_threads}_${sub_num_warp_q}_${sub_num_thread_q}")
     # Remove illegal characters from filename
     string(REGEX REPLACE "[^A-Za-z0-9_]" "" filename ${filename})
-    set(output_file "${CMAKE_CURRENT_BINARY_DIR}/${filename}.cu")
+    set(output_file "${CMAKE_CURRENT_BINARY_DIR}/${filename}.${GPU_EXT_PREFIX}")
 
     # Read the template file
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/impl/scan/IVFInterleavedScanKernelTemplate.cu" template_content)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/impl/scan/IVFInterleavedScanKernelTemplate.${GPU_EXT_PREFIX}" template_content)
 
     # Replace the placeholders
     string(REPLACE "SUB_CODEC_TYPE" "${sub_codec}" template_content "${template_content}")
@@ -236,23 +250,87 @@ endfunction()
 
 generate_ivf_interleaved_code()
 
-if(FAISS_ENABLE_RAFT)
+if(FAISS_ENABLE_CUVS)
   list(APPEND FAISS_GPU_HEADERS
-          impl/RaftIVFFlat.cuh
-          impl/RaftFlatIndex.cuh)
+          GpuIndexBinaryCagra.h
+          GpuIndexCagra.h
+          impl/BinaryCuvsCagra.cuh
+          impl/CuvsCagra.cuh
+          impl/CuvsFlatIndex.cuh
+          impl/CuvsIVFFlat.cuh
+          impl/CuvsIVFPQ.cuh
+          utils/CuvsFilterConvert.h
+          utils/CuvsUtils.h)
   list(APPEND FAISS_GPU_SRC
-          impl/RaftFlatIndex.cu
-	  impl/RaftIVFFlat.cu)
+          GpuIndexBinaryCagra.cu
+          GpuIndexCagra.cu
+          impl/BinaryCuvsCagra.cu
+          impl/CuvsCagra.cu
+          impl/CuvsFlatIndex.cu
+          impl/CuvsIVFFlat.cu
+          impl/CuvsIVFPQ.cu
+          utils/CuvsFilterConvert.cu
+          utils/CuvsUtils.cu)
+endif()
 
-  target_compile_definitions(faiss PUBLIC USE_NVIDIA_RAFT=1)
-  target_compile_definitions(faiss_avx2 PUBLIC USE_NVIDIA_RAFT=1)
+add_library(faiss_gpu_objs OBJECT ${FAISS_GPU_SRC})
+set_target_properties(faiss_gpu_objs PROPERTIES
+  POSITION_INDEPENDENT_CODE ON
+  WINDOWS_EXPORT_ALL_SYMBOLS ON
+)
+target_include_directories(faiss_gpu_objs PUBLIC
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>)
+
+if(FAISS_ENABLE_CUVS)
+  target_compile_definitions(faiss PUBLIC USE_NVIDIA_CUVS=1)
+  target_compile_definitions(faiss_avx2 PUBLIC USE_NVIDIA_CUVS=1)
+  target_compile_definitions(faiss_avx512 PUBLIC USE_NVIDIA_CUVS=1)
+  target_compile_definitions(faiss_avx512_spr PUBLIC USE_NVIDIA_CUVS=1)
+
+  # Mark all functions as hidden so that we don't generate
+  # global 'public' functions that also exist in libcuvs.so
+  #
+  # This ensures that faiss functions will call the local version
+  # inside libfaiss.so . This is needed to ensure that things
+  # like raft cublas resources are created and used within the same
+  # dynamic library + CUDA runtime context which are requirements
+  # for valid execution
+  #
+  # To still allow these classes to be used by consumers, the
+  # respective classes/types in the headers are explicitly marked
+  # as 'public' so they can be used by consumers
+  set_source_files_properties(
+    GpuIndexCagra.cu
+    GpuDistance.cu
+    GpuIndexIVFFlat.cu
+    GpuIndexIVFPQ.cu
+    GpuIndexFlat.cu
+    StandardGpuResources.cpp
+    impl/CuvsCagra.cu
+    impl/CuvsFlatIndex.cu
+    impl/CuvsIVFFlat.cu
+    impl/CuvsIVFPQ.cu
+    utils/CuvsFilterConvert.cu
+    utils/CuvsUtils.cu
+    TARGET_DIRECTORY faiss
+    PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden")
+  target_compile_definitions(faiss_gpu_objs PUBLIC USE_NVIDIA_CUVS=1)
+endif()
+
+if (FAISS_ENABLE_ROCM)
+  list(TRANSFORM FAISS_GPU_SRC REPLACE cu$ hip)
 endif()
 
 # Export FAISS_GPU_HEADERS variable to parent scope.
 set(FAISS_GPU_HEADERS ${FAISS_GPU_HEADERS} PARENT_SCOPE)
 
-target_sources(faiss PRIVATE ${FAISS_GPU_SRC})
-target_sources(faiss_avx2 PRIVATE ${FAISS_GPU_SRC})
+target_link_libraries(faiss PRIVATE  faiss_gpu_objs)
+target_link_libraries(faiss_avx2 PRIVATE faiss_gpu_objs)
+target_link_libraries(faiss_avx512 PRIVATE faiss_gpu_objs)
+target_link_libraries(faiss_avx512_spr PRIVATE faiss_gpu_objs)
+target_link_libraries(faiss_sve PRIVATE faiss_gpu_objs)
+
+install(TARGETS faiss_gpu_objs EXPORT faiss-targets)
 
 foreach(header ${FAISS_GPU_HEADERS})
   get_filename_component(dir ${header} DIRECTORY )
@@ -261,24 +339,30 @@ foreach(header ${FAISS_GPU_HEADERS})
   )
 endforeach()
 
-# Prepares a host linker script and enables host linker to support
-# very large device object files.
-# This is what CUDA 11.5+ `nvcc -hls=gen-lcs -aug-hls` would generate
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fatbin.ld"
-[=[
-SECTIONS
-{
-.nvFatBinSegment : { *(.nvFatBinSegment) }
-__nv_relfatbin : { *(__nv_relfatbin) }
-.nv_fatbin : { *(.nv_fatbin) }
-}
-]=]
-)
-target_link_options(faiss PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/fatbin.ld")
-target_link_options(faiss_avx2 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/fatbin.ld")
+if (FAISS_ENABLE_ROCM)
+  target_link_libraries(faiss_gpu_objs PRIVATE hip::host roc::hipblas)
+  target_compile_options(faiss_gpu_objs PRIVATE)
+else()
+  # Prepares a host linker script and enables host linker to support
+  # very large device object files.
+  # This is what CUDA 11.5+ `nvcc -hls=gen-lcs -aug-hls` would generate
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fatbin.ld"
+  [=[
+  SECTIONS
+  {
+    .nvFatBinSegment : { *(.nvFatBinSegment) }
+    __nv_relfatbin : { *(__nv_relfatbin) }
+    .nv_fatbin : { *(.nv_fatbin) }
+  }
+  ]=]
+  )
+  target_link_options(faiss_gpu_objs PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/fatbin.ld")
 
-find_package(CUDAToolkit REQUIRED)
-target_link_libraries(faiss PRIVATE CUDA::cudart CUDA::cublas $<$<BOOL:${FAISS_ENABLE_RAFT}>:raft::raft> $<$<BOOL:${FAISS_ENABLE_RAFT}>:raft::compiled> $<$<BOOL:${FAISS_ENABLE_RAFT}>:nvidia::cutlass::cutlass>)
-target_link_libraries(faiss_avx2 PRIVATE CUDA::cudart CUDA::cublas $<$<BOOL:${FAISS_ENABLE_RAFT}>:raft::raft> $<$<BOOL:${FAISS_ENABLE_RAFT}>:raft::compiled>  $<$<BOOL:${FAISS_ENABLE_RAFT}>:nvidia::cutlass::cutlass>)
-target_compile_options(faiss PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xfatbin=-compress-all --expt-extended-lambda --expt-relaxed-constexpr>)
-target_compile_options(faiss_avx2 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xfatbin=-compress-all --expt-extended-lambda --expt-relaxed-constexpr>)
+
+  find_package(CUDAToolkit REQUIRED)
+  target_link_libraries(faiss_gpu_objs PRIVATE ${CUDA_LIBS} $<$<BOOL:${FAISS_ENABLE_CUVS}>:cuvs::cuvs> $<$<BOOL:${FAISS_ENABLE_CUVS}>:OpenMP::OpenMP_CXX>)
+  target_compile_options(faiss_gpu_objs PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:-Xfatbin=-compress-all
+    --expt-extended-lambda --expt-relaxed-constexpr
+    $<$<BOOL:${FAISS_ENABLE_CUVS}>:-Xcompiler=${OpenMP_CXX_FLAGS}>>)
+endif()

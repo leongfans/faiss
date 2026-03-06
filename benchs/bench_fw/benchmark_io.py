@@ -10,13 +10,14 @@ import logging
 import os
 import pickle
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from zipfile import ZipFile
 
-import faiss  # @manual=//faiss/python:pyfaiss_gpu
+import faiss  # @manual=//faiss/python:pyfaiss
 
 import numpy as np
-from faiss.contrib.datasets import (  # @manual=//faiss/contrib:faiss_contrib_gpu
+import submitit  # @manual=fbsource//third-party/submitit:submitit
+from faiss.contrib.datasets import (  # @manual=//faiss/contrib:faiss_contrib
     dataset_from_name,
 )
 
@@ -44,12 +45,16 @@ def merge_rcq_itq(
 
 @dataclass
 class BenchmarkIO:
-    path: str
+    path: str  # local path
 
-    def __post_init__(self):
-        self.cached_ds = {}
+    def __init__(self, path: str):
+        self.path = path
+        self.cached_ds: Dict[Any, Any] = {}
 
-    def get_local_filename(self, filename):
+    def clone(self):
+        return BenchmarkIO(path=self.path)
+
+    def get_local_filepath(self, filename):
         if len(filename) > 184:
             fn, ext = os.path.splitext(filename)
             filename = (
@@ -57,13 +62,16 @@ class BenchmarkIO:
             )
         return os.path.join(self.path, filename)
 
+    def get_remote_filepath(self, filename) -> Optional[str]:
+        return None
+
     def download_file_from_blobstore(
         self,
         filename: str,
         bucket: Optional[str] = None,
         path: Optional[str] = None,
     ):
-        return self.get_local_filename(filename)
+        return self.get_local_filepath(filename)
 
     def upload_file_to_blobstore(
         self,
@@ -75,7 +83,7 @@ class BenchmarkIO:
         pass
 
     def file_exist(self, filename: str):
-        fn = self.get_local_filename(filename)
+        fn = self.get_local_filepath(filename)
         exists = os.path.exists(fn)
         logger.info(f"{filename} {exists=}")
         return exists
@@ -103,10 +111,10 @@ class BenchmarkIO:
         values: List[Any],
         overwrite: bool = False,
     ):
-        fn = self.get_local_filename(filename)
+        fn = self.get_local_filepath(filename)
         with ZipFile(fn, "w") as zip_file:
             for key, value in zip(keys, values, strict=True):
-                with zip_file.open(key, "w") as f:
+                with zip_file.open(key, "w", force_zip64=True) as f:
                     if key in ["D", "I", "R", "lims"]:
                         np.save(f, value)
                     elif key in ["P"]:
@@ -117,22 +125,31 @@ class BenchmarkIO:
         self.upload_file_to_blobstore(filename, overwrite=overwrite)
 
     def get_dataset(self, dataset):
-        if dataset.namespace is not None and dataset.namespace[:4] == "std_":
-            if dataset.tablename not in self.cached_ds:
-                self.cached_ds[dataset.tablename] = dataset_from_name(
-                    dataset.tablename,
-                )
-            p = dataset.namespace[4]
-            if p == "t":
-                return self.cached_ds[dataset.tablename].get_train()
-            elif p == "d":
-                return self.cached_ds[dataset.tablename].get_database()
-            elif p == "q":
-                return self.cached_ds[dataset.tablename].get_queries()
-            else:
-                raise ValueError
-        elif dataset not in self.cached_ds:
-            if dataset.namespace == "syn":
+        if dataset not in self.cached_ds:
+            if (
+                dataset.namespace is not None
+                and dataset.namespace[:4] == "std_"
+            ):
+                if dataset.tablename not in self.cached_ds:
+                    self.cached_ds[dataset.tablename] = dataset_from_name(
+                        dataset.tablename,
+                    )
+                p = dataset.namespace[4]
+                if p == "t":
+                    self.cached_ds[dataset] = self.cached_ds[
+                        dataset.tablename
+                    ].get_train(dataset.num_vectors)
+                elif p == "d":
+                    self.cached_ds[dataset] = self.cached_ds[
+                        dataset.tablename
+                    ].get_database()
+                elif p == "q":
+                    self.cached_ds[dataset] = self.cached_ds[
+                        dataset.tablename
+                    ].get_queries()
+                else:
+                    raise ValueError
+            elif dataset.namespace == "syn":
                 d, seed = dataset.tablename.split("_")
                 d = int(d)
                 seed = int(seed)
@@ -168,11 +185,12 @@ class BenchmarkIO:
         self,
         nparray: np.ndarray,
         filename: str,
+        overwrite: bool = False,
     ):
-        fn = self.get_local_filename(filename)
+        fn = self.get_local_filepath(filename)
         logger.info(f"Saving nparray {nparray.shape} to {fn}")
         np.save(fn, nparray)
-        self.upload_file_to_blobstore(filename)
+        self.upload_file_to_blobstore(filename=filename, overwrite=overwrite)
 
     def read_json(
         self,
@@ -191,11 +209,11 @@ class BenchmarkIO:
         filename: str,
         overwrite: bool = False,
     ):
-        fn = self.get_local_filename(filename)
+        fn = self.get_local_filepath(filename)
         logger.info(f"Saving json {json_dict} to {fn}")
         with open(fn, "w") as fp:
             json.dump(json_dict, fp)
-        self.upload_file_to_blobstore(filename, overwrite=overwrite)
+        self.upload_file_to_blobstore(filename=filename, overwrite=overwrite)
 
     def read_index(
         self,
@@ -206,7 +224,7 @@ class BenchmarkIO:
         fn = self.download_file_from_blobstore(filename, bucket, path)
         logger.info(f"Loading index {fn}")
         ext = os.path.splitext(fn)[1]
-        if ext in [".faiss", ".codec"]:
+        if ext in [".faiss", ".codec", ".index"]:
             index = faiss.read_index(fn)
         elif ext == ".pkl":
             with open(fn, "rb") as model_file:
@@ -221,7 +239,35 @@ class BenchmarkIO:
         index: faiss.Index,
         filename: str,
     ):
-        fn = self.get_local_filename(filename)
+        fn = self.get_local_filepath(filename)
         logger.info(f"Saving index to {fn}")
         faiss.write_index(index, fn)
         self.upload_file_to_blobstore(filename)
+        assert os.path.exists(fn)
+        return os.path.getsize(fn)
+
+    def launch_jobs(self, func, params, local=True):
+        if local:
+            results = [func(p) for p in params]
+            return results
+        logger.info(f"launching {len(params)} jobs")
+        executor = submitit.AutoExecutor(folder="/checkpoint/gsz/jobs")
+        executor.update_parameters(
+            nodes=1,
+            gpus_per_node=8,
+            cpus_per_task=80,
+            # mem_gb=640,
+            tasks_per_node=1,
+            name="faiss_benchmark",
+            slurm_array_parallelism=512,
+            slurm_partition="scavenge",
+            slurm_time=4 * 60,
+            slurm_constraint="bldg1",
+        )
+        jobs = executor.map_array(func, params)
+        logger.info(f"launched {len(jobs)} jobs")
+        for job, param in zip(jobs, params):
+            logger.info(f"{job.job_id=} {param[0]=}")
+        results = [job.result() for job in jobs]
+        print(f"received {len(results)} results")
+        return results

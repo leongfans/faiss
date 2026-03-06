@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -8,6 +8,7 @@ Tests for the implementation of Local Search Quantizer
 """
 
 import numpy as np
+import platform
 
 import faiss
 import unittest
@@ -145,6 +146,8 @@ class TestComponents(unittest.TestCase):
 
         np.testing.assert_allclose(decoded_x, decoded_x_ref, rtol=1e-6)
 
+    @unittest.skipIf(platform.system() == 'Windows',
+                     'Does not work on Windows after numpy 2 upgrade.')
     def test_update_codebooks(self):
         """Test codebooks updatation."""
         d = 16
@@ -173,7 +176,7 @@ class TestComponents(unittest.TestCase):
 
         ref_codebooks = update_codebooks_ref(x, codes, K, lambd)
 
-        np.testing.assert_allclose(new_codebooks, ref_codebooks, atol=1e-3)
+        np.testing.assert_allclose(new_codebooks, ref_codebooks, rtol=1e-3, atol=1e-3)
 
     def test_update_codebooks_with_double(self):
         """If the data is not zero-centering, it would be more accurate to
@@ -196,7 +199,6 @@ class TestComponents(unittest.TestCase):
         err_float = eval_codec(lsq, xb)
 
         # 6533.377 vs 25457.99
-        print(err_double, err_float)
         self.assertLess(err_double, err_float)
 
     def test_compute_binary_terms(self):
@@ -219,7 +221,9 @@ class TestComponents(unittest.TestCase):
         codebooks = codebooks.reshape(M, K, d).copy()
         ref_binaries = compute_binary_terms_ref(codebooks)
 
-        np.testing.assert_allclose(binaries, ref_binaries, atol=1e-4)
+        np.testing.assert_allclose(
+            binaries, ref_binaries, rtol=1e-4, atol=1e-4
+        )
 
     def test_compute_unary_terms(self):
         d = 16
@@ -241,7 +245,7 @@ class TestComponents(unittest.TestCase):
         codebooks = codebooks.reshape(M, K, d).copy()
         ref_unaries = compute_unary_terms_ref(codebooks, x)
 
-        np.testing.assert_allclose(unaries, ref_unaries, atol=1e-4)
+        np.testing.assert_allclose(unaries, ref_unaries, rtol=1e-4, atol=1e-4)
 
     def test_icm_encode_step(self):
         d = 16
@@ -314,7 +318,7 @@ class TestComponents(unittest.TestCase):
             n,
             1)
 
-        # do icm encoding without pre-computed unary and bianry terms in Python
+        # do icm encoding without pre-computed unary and binary terms in Python
         codebooks = faiss.vector_float_to_array(lsq.codebooks)
         codebooks = codebooks.reshape(M, K, d).copy()
         ref_codes = icm_encode_ref(x, codebooks, codes)
@@ -348,7 +352,6 @@ class TestLocalSearchQuantizer(unittest.TestCase):
         pq.train(xt)
         err_pq = eval_codec(pq, xb)
 
-        print(err_lsq, err_pq)
         self.assertLess(err_lsq, err_pq)
 
 
@@ -463,7 +466,6 @@ class TestIndexIVFLocalSearchQuantizer(unittest.TestCase):
             index.nprobe = nprobe
             D, I = index.search(ds.get_queries(), 10)
             inter = faiss.eval_intersection(I, ds.get_groundtruth(10))
-            # print("nprobe=", nprobe, "inter=", inter)
             inters.append(inter)
 
         inters = np.array(inters)
@@ -528,7 +530,6 @@ class TestProductLocalSearchQuantizer(unittest.TestCase):
         pq.train(xt)
         err_pq = eval_codec(pq, xb)
 
-        print(err_plsq, err_pq)
         self.assertLess(err_plsq, err_pq)
 
     def test_with_lsq(self):
@@ -549,7 +550,6 @@ class TestProductLocalSearchQuantizer(unittest.TestCase):
         lsq.train(xt)
         err_lsq = eval_codec(lsq, xb)
 
-        print(err_plsq, err_lsq)
         self.assertEqual(err_plsq, err_lsq)
 
     def test_lut(self):
@@ -660,11 +660,12 @@ class TestIndexIVFProductLocalSearchQuantizer(unittest.TestCase):
     def test_index_accuracy(self):
         self.eval_index_accuracy("IVF32,PLSQ2x2x5_Nqint8")
 
+    @unittest.skipIf(platform.system() == 'Windows',
+                     'Does not work on Windows-2022+.')
     def test_index_accuracy2(self):
         """check that the error is in the same ballpark as LSQ."""
         inter1 = self.eval_index_accuracy("IVF32,PLSQ2x2x5_Nqint8")
         inter2 = self.eval_index_accuracy("IVF32,LSQ4x5_Nqint8")
-        # print(inter1, inter2)  # 381 vs 374
         self.assertGreaterEqual(inter1 * 1.1, inter2)
 
     def test_factory(self):

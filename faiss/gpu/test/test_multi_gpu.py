@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -10,6 +10,7 @@ import faiss
 
 from faiss.contrib.datasets import SyntheticDataset
 from faiss.contrib.evaluation import check_ref_knn_with_draws
+
 
 class TestShardedFlat(unittest.TestCase):
 
@@ -29,6 +30,7 @@ class TestShardedFlat(unittest.TestCase):
 
         co = faiss.GpuMultipleClonerOptions()
         co.shard = True
+        co.use_cuvs = False
         index = faiss.index_cpu_to_all_gpus(index_cpu, co, ngpu=2)
 
         index.add(xb)
@@ -71,6 +73,7 @@ class TestShardedFlat(unittest.TestCase):
         co = faiss.GpuMultipleClonerOptions()
         co.shard = True
         co.common_ivf_quantizer = True
+        co.use_cuvs = False
         index = faiss.index_cpu_to_all_gpus(index, co, ngpu=2)
 
         index.quantizer  # make sure there is indeed a quantizer
@@ -111,6 +114,7 @@ class TestShardedFlat(unittest.TestCase):
 
         co = faiss.GpuMultipleClonerOptions()
         co.shard = shard
+        co.use_cuvs = False
 
         # index2 = faiss.index_cpu_to_all_gpus(index, ngpu=ngpu)
         res = faiss.StandardGpuResources()
@@ -127,6 +131,8 @@ class TestShardedFlat(unittest.TestCase):
 
 
 # This class also has a multi-GPU test within
+
+
 class EvalIVFPQAccuracy(unittest.TestCase):
     def get_dataset(self, small_one=False):
         if not small_one:
@@ -188,16 +194,18 @@ class EvalIVFPQAccuracy(unittest.TestCase):
         ts.append(time.time())
 
         res = faiss.StandardGpuResources()
-        gpu_index = faiss.index_cpu_to_gpu(res, 0, index)
+        co = faiss.GpuClonerOptions()
+        co.use_cuvs = False
+        gpu_index = faiss.index_cpu_to_gpu(res, 0, index, co)
         ts.append(time.time())
 
         # Validate the layout of the memory info
         mem_info = res.getMemoryInfo()
 
-        assert type(mem_info) == dict
-        assert type(mem_info[0]['FlatData']) == tuple
-        assert type(mem_info[0]['FlatData'][0]) == int
-        assert type(mem_info[0]['FlatData'][1]) == int
+        assert isinstance(mem_info, dict)
+        assert isinstance(mem_info[0]['FlatData'], tuple)
+        assert isinstance(mem_info[0]['FlatData'][0], int)
+        assert isinstance(mem_info[0]['FlatData'][1], int)
 
         gpu_index.nprobe = 4
 
@@ -217,6 +225,7 @@ class EvalIVFPQAccuracy(unittest.TestCase):
             res = [faiss.StandardGpuResources() for i in range(2)]
             co = faiss.GpuMultipleClonerOptions()
             co.shard = shard
+            co.use_cuvs = False
 
             gpu_index = faiss.index_cpu_to_gpu_multiple_py(res, index, co)
 

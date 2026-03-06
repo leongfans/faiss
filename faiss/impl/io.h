@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -16,11 +16,11 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
-
-#include <faiss/Index.h>
 
 namespace faiss {
 
@@ -32,7 +32,7 @@ struct IOReader {
     virtual size_t operator()(void* ptr, size_t size, size_t nitems) = 0;
 
     // return a file number that can be memory-mapped
-    virtual int fileno();
+    virtual int filedescriptor();
 
     virtual ~IOReader() {}
 };
@@ -45,7 +45,7 @@ struct IOWriter {
     virtual size_t operator()(const void* ptr, size_t size, size_t nitems) = 0;
 
     // return a file number that can be memory-mapped
-    virtual int fileno();
+    virtual int filedescriptor();
 
     virtual ~IOWriter() noexcept(false) {}
 };
@@ -65,30 +65,30 @@ struct FileIOReader : IOReader {
     FILE* f = nullptr;
     bool need_close = false;
 
-    FileIOReader(FILE* rf);
+    explicit FileIOReader(FILE* rf);
 
-    FileIOReader(const char* fname);
+    explicit FileIOReader(const char* fname);
 
     ~FileIOReader() override;
 
     size_t operator()(void* ptr, size_t size, size_t nitems) override;
 
-    int fileno() override;
+    int filedescriptor() override;
 };
 
 struct FileIOWriter : IOWriter {
     FILE* f = nullptr;
     bool need_close = false;
 
-    FileIOWriter(FILE* wf);
+    explicit FileIOWriter(FILE* wf);
 
-    FileIOWriter(const char* fname);
+    explicit FileIOWriter(const char* fname);
 
     ~FileIOWriter() override;
 
     size_t operator()(const void* ptr, size_t size, size_t nitems) override;
 
-    int fileno() override;
+    int filedescriptor() override;
 };
 
 /*******************************************************

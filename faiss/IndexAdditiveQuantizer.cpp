@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,15 +8,12 @@
 #include <faiss/IndexAdditiveQuantizer.h>
 
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/impl/ResidualQuantizer.h>
 #include <faiss/impl/ResultHandler.h>
-#include <faiss/utils/distances.h>
 #include <faiss/utils/extra_distances.h>
-#include <faiss/utils/utils.h>
 
 namespace faiss {
 
@@ -87,6 +84,7 @@ struct AQDistanceComputerLUT : FlatCodesDistanceComputer {
 
     float bias;
     void set_query(const float* x) final {
+        q = x;
         // this is quite sub-optimal for multiple queries
         aq.compute_LUT(1, x, LUT.data());
         if (is_IP) {
@@ -114,18 +112,19 @@ struct AQDistanceComputerLUT : FlatCodesDistanceComputer {
  * scanning implementation for search
  ************************************************************/
 
-template <class VectorDistance, class ResultHandler>
+template <class VectorDistance, class BlockResultHandler>
 void search_with_decompress(
         const IndexAdditiveQuantizer& ir,
         const float* xq,
         VectorDistance& vd,
-        ResultHandler& res) {
+        BlockResultHandler& res) {
     const uint8_t* codes = ir.codes.data();
     size_t ntotal = ir.ntotal;
     size_t code_size = ir.code_size;
     const AdditiveQuantizer* aq = ir.aq;
 
-    using SingleResultHandler = typename ResultHandler::SingleResultHandler;
+    using SingleResultHandler =
+            typename BlockResultHandler::SingleResultHandler;
 
 #pragma omp parallel for if (res.nq > 100)
     for (int64_t q = 0; q < res.nq; q++) {
@@ -142,11 +141,14 @@ void search_with_decompress(
     }
 }
 
-template <bool is_IP, AdditiveQuantizer::Search_type_t st, class ResultHandler>
+template <
+        bool is_IP,
+        AdditiveQuantizer::Search_type_t st,
+        class BlockResultHandler>
 void search_with_LUT(
         const IndexAdditiveQuantizer& ir,
         const float* xq,
-        ResultHandler& res) {
+        BlockResultHandler& res) {
     const AdditiveQuantizer& aq = *ir.aq;
     const uint8_t* codes = ir.codes.data();
     size_t ntotal = ir.ntotal;
@@ -154,7 +156,8 @@ void search_with_LUT(
     size_t nq = res.nq;
     size_t d = ir.d;
 
-    using SingleResultHandler = typename ResultHandler::SingleResultHandler;
+    using SingleResultHandler =
+            typename BlockResultHandler::SingleResultHandler;
     std::unique_ptr<float[]> LUT(new float[nq * aq.total_codebook_size]);
 
     aq.compute_LUT(nq, xq, LUT.get());
@@ -184,17 +187,14 @@ void search_with_LUT(
 FlatCodesDistanceComputer* IndexAdditiveQuantizer::
         get_FlatCodesDistanceComputer() const {
     if (aq->search_type == AdditiveQuantizer::ST_decompress) {
-        if (metric_type == METRIC_L2) {
-            using VD = VectorDistance<METRIC_L2>;
-            VD vd = {size_t(d), metric_arg};
-            return new AQDistanceComputerDecompress<VD>(*this, vd);
-        } else if (metric_type == METRIC_INNER_PRODUCT) {
-            using VD = VectorDistance<METRIC_INNER_PRODUCT>;
-            VD vd = {size_t(d), metric_arg};
-            return new AQDistanceComputerDecompress<VD>(*this, vd);
-        } else {
-            FAISS_THROW_MSG("unsupported metric");
-        }
+        return with_VectorDistance(
+                d,
+                metric_type,
+                metric_arg,
+                [&](auto vd) -> FlatCodesDistanceComputer* {
+                    return new AQDistanceComputerDecompress<decltype(vd)>(
+                            *this, vd);
+                });
     } else {
         if (metric_type == METRIC_INNER_PRODUCT) {
             return new AQDistanceComputerLUT<
@@ -217,7 +217,6 @@ FlatCodesDistanceComputer* IndexAdditiveQuantizer::
                     return new AQDistanceComputerLUT<
                             false,
                             AdditiveQuantizer::ST_norm_cqint8>(*this);
-                    break;
 #undef DISPATCH
                 default:
                     FAISS_THROW_FMT(
@@ -238,24 +237,26 @@ void IndexAdditiveQuantizer::search(
             !params, "search params not supported for this index");
 
     if (aq->search_type == AdditiveQuantizer::ST_decompress) {
-        if (metric_type == METRIC_L2) {
-            using VD = VectorDistance<METRIC_L2>;
-            VD vd = {size_t(d), metric_arg};
-            HeapResultHandler<VD::C> rh(n, distances, labels, k);
-            search_with_decompress(*this, x, vd, rh);
-        } else if (metric_type == METRIC_INNER_PRODUCT) {
-            using VD = VectorDistance<METRIC_INNER_PRODUCT>;
-            VD vd = {size_t(d), metric_arg};
-            HeapResultHandler<VD::C> rh(n, distances, labels, k);
-            search_with_decompress(*this, x, vd, rh);
-        }
+        with_VectorDistance(d, metric_type, metric_arg, [&](auto vd) {
+            if constexpr (decltype(vd)::is_similarity) {
+                HeapBlockResultHandler<CMin<float, idx_t>> rh(
+                        n, distances, labels, k);
+                search_with_decompress(*this, x, vd, rh);
+            } else {
+                HeapBlockResultHandler<CMax<float, idx_t>> rh(
+                        n, distances, labels, k);
+                search_with_decompress(*this, x, vd, rh);
+            }
+        });
     } else {
         if (metric_type == METRIC_INNER_PRODUCT) {
-            HeapResultHandler<CMin<float, idx_t>> rh(n, distances, labels, k);
+            HeapBlockResultHandler<CMin<float, idx_t>> rh(
+                    n, distances, labels, k);
             search_with_LUT<true, AdditiveQuantizer::ST_LUT_nonorm>(
                     *this, x, rh);
         } else {
-            HeapResultHandler<CMax<float, idx_t>> rh(n, distances, labels, k);
+            HeapBlockResultHandler<CMax<float, idx_t>> rh(
+                    n, distances, labels, k);
             switch (aq->search_type) {
 #define DISPATCH(st)                                                 \
     case AdditiveQuantizer::st:                                      \
@@ -266,6 +267,7 @@ void IndexAdditiveQuantizer::search(
                 DISPATCH(ST_norm_qint8)
                 DISPATCH(ST_norm_qint4)
                 DISPATCH(ST_norm_cqint4)
+                DISPATCH(ST_norm_from_LUT)
                 case AdditiveQuantizer::ST_norm_cqint8:
                 case AdditiveQuantizer::ST_norm_lsq2x4:
                 case AdditiveQuantizer::ST_norm_rq2x4:
@@ -520,7 +522,7 @@ void ResidualCoarseQuantizer::search(
         float* distances,
         idx_t* labels,
         const SearchParameters* params_in) const {
-    float beam_factor = this->beam_factor;
+    float actual_beam_factor = this->beam_factor;
     if (params_in) {
         auto params =
                 dynamic_cast<const SearchParametersResidualCoarseQuantizer*>(
@@ -528,15 +530,15 @@ void ResidualCoarseQuantizer::search(
         FAISS_THROW_IF_NOT_MSG(
                 params,
                 "need SearchParametersResidualCoarseQuantizer parameters");
-        beam_factor = params->beam_factor;
+        actual_beam_factor = params->beam_factor;
     }
 
-    if (beam_factor < 0) {
+    if (actual_beam_factor < 0) {
         AdditiveCoarseQuantizer::search(n, x, k, distances, labels);
         return;
     }
 
-    int beam_size = int(k * beam_factor);
+    int beam_size = int(k * actual_beam_factor);
     if (beam_size > ntotal) {
         beam_size = ntotal;
     }

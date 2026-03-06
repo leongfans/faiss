@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -16,10 +16,11 @@
 
 #include <algorithm>
 #include <queue>
-#include <unordered_map>
 #include <unordered_set>
 
-#include <faiss/impl/platform_macros.h>
+#include <faiss/impl/FaissAssert.h>
+
+#include <faiss/impl/simd_dispatch.h>
 #include <faiss/utils/distances.h>
 
 namespace faiss {
@@ -54,8 +55,9 @@ struct Comb {
 
     uint64_t operator()(int n, int p) const {
         assert(n < nmax && p < nmax);
-        if (p > n)
+        if (p > n) {
             return 0;
+        }
         return tab[n * nmax + p];
     }
 };
@@ -67,8 +69,9 @@ point_list_t sum_of_sq(float total, int v, int n, float add = 0) {
     if (total < 0) {
         return point_list_t();
     } else if (n == 1) {
-        while (sqr(v + add) > total)
+        while (sqr(v + add) > total) {
             v--;
+        }
         if (sqr(v + add) == total) {
             return point_list_t(1, v + add);
         } else {
@@ -119,8 +122,9 @@ uint64_t repeats_encode_64(
                 code_comb += comb(rank, occ + 1);
                 occ++;
                 coded |= uint64_t{1} << i;
-                if (occ == r->n)
+                if (occ == r->n) {
                     break;
+                }
             }
             rank++;
         }
@@ -156,8 +160,9 @@ void repeats_decode_64(
                 decoded |= uint64_t{1} << i;
                 c[i] = r->val;
                 occ++;
-                if (occ == r->n)
+                if (occ == r->n) {
                     break;
+                }
                 next_rank = decode_comb_1(&code_comb, r->n - occ, next_rank);
             }
         }
@@ -211,8 +216,9 @@ uint64_t Repeats::encode(const float* c) const {
                     code_comb += comb(rank, occ + 1);
                     occ++;
                     coded[i] = true;
-                    if (occ == r->n)
+                    if (occ == r->n) {
                         break;
+                    }
                 }
                 rank++;
             }
@@ -248,8 +254,9 @@ void Repeats::decode(uint64_t code, float* c) const {
                     decoded[i] = true;
                     c[i] = r->val;
                     occ++;
-                    if (occ == r->n)
+                    if (occ == r->n) {
                         break;
+                    }
                     next_rank =
                             decode_comb_1(&code_comb, r->n - occ, next_rank);
                 }
@@ -298,18 +305,20 @@ void EnumeratedVectors::find_nn(
     }
 
     std::vector<float> c(dim);
-    for (size_t i = 0; i < nc; i++) {
-        uint64_t code = codes[nc];
-        decode(code, c.data());
-        for (size_t j = 0; j < nq; j++) {
-            const float* x = xq + j * dim;
-            float dis = fvec_inner_product(x, c.data(), dim);
-            if (dis > distances[j]) {
-                distances[j] = dis;
-                labels[j] = i;
+    with_simd_level([&]<SIMDLevel SL>() {
+        for (size_t i = 0; i < nc; i++) {
+            uint64_t code = codes[nc];
+            decode(code, c.data());
+            for (size_t j = 0; j < nq; j++) {
+                const float* x = xq + j * dim;
+                float dis = fvec_inner_product<SL>(x, c.data(), dim);
+                if (dis > distances[j]) {
+                    distances[j] = dis;
+                    labels[j] = i;
+                }
             }
         }
-    }
+    });
 }
 
 /**********************************************************
@@ -317,6 +326,12 @@ void EnumeratedVectors::find_nn(
  **********************************************************/
 
 ZnSphereSearch::ZnSphereSearch(int dim, int r2) : dimS(dim), r2(r2) {
+    FAISS_THROW_IF_NOT_MSG(
+            dim > 0 && dim <= 64, "ZnSphereSearch: dim must be in [1, 64]");
+    FAISS_THROW_IF_NOT_MSG(
+            r2 >= 0 && r2 <= 512,
+            "ZnSphereSearch: r2 must be in [0, 512] to avoid"
+            " excessive computation in sum_of_sq");
     voc = sum_of_sq(r2, int(ceil(sqrt(r2)) + 1), dim);
     natom = voc.size() / dim;
 }
@@ -351,13 +366,15 @@ float ZnSphereSearch::search(
     // find best
     int ibest = -1;
     float dpbest = -100;
-    for (int i = 0; i < natom; i++) {
-        float dp = fvec_inner_product(voc.data() + i * dim, xperm, dim);
-        if (dp > dpbest) {
-            dpbest = dp;
-            ibest = i;
+    with_simd_level([&]<SIMDLevel SL>() {
+        for (int i = 0; i < natom; i++) {
+            float dp = fvec_inner_product<SL>(voc.data() + i * dim, xperm, dim);
+            if (dp > dpbest) {
+                dpbest = dp;
+                ibest = i;
+            }
         }
-    }
+    });
     // revert sort
     const float* cin = voc.data() + ibest * dim;
     for (int i = 0; i < dim; i++) {
@@ -441,10 +458,11 @@ void ZnSphereCodec::decode(uint64_t code, float* c) const {
     int i0 = 0, i1 = natom;
     while (i0 + 1 < i1) {
         int imed = (i0 + i1) / 2;
-        if (code_segments[imed].c0 <= code)
+        if (code_segments[imed].c0 <= code) {
             i0 = imed;
-        else
+        } else {
             i1 = imed;
+        }
     }
     const CodeSegment& cs = code_segments[i0];
     code -= cs.c0;
@@ -481,14 +499,28 @@ void ZnSphereCodecRec::set_nv_cum(int ld, int r2t, int r2a, uint64_t cum) {
 
 ZnSphereCodecRec::ZnSphereCodecRec(int dim, int r2)
         : EnumeratedVectors(dim), r2(r2) {
+    FAISS_THROW_IF_NOT_MSG(
+            dim > 0 && r2 >= 0, "invalid ZnSphereCodecRec parameters");
     log2_dim = 0;
     while (dim > (1 << log2_dim)) {
         log2_dim++;
     }
-    assert(dim == (1 << log2_dim) || !"dimension must be a power of 2");
+    assert(dim == (1 << log2_dim) && "dimension must be a power of 2");
 
-    all_nv.resize((log2_dim + 1) * (r2 + 1));
-    all_nv_cum.resize((log2_dim + 1) * (r2 + 1) * (r2 + 1));
+    // Validate allocation sizes to avoid null pointer dereference on
+    // allocation failure. The cumulative table has O(r2^2) entries.
+    size_t nv_size = (size_t)(log2_dim + 1) * (r2 + 1);
+    size_t nv_cum_size = nv_size * (r2 + 1);
+    FAISS_THROW_IF_NOT_MSG(
+            nv_cum_size / (r2 + 1) == nv_size,
+            "ZnSphereCodecRec: allocation size overflow");
+    // Cap at ~1GB worth of uint64_t entries
+    FAISS_THROW_IF_NOT_MSG(
+            nv_cum_size <= (size_t(1) << 27),
+            "ZnSphereCodecRec: r2 too large, would require excessive memory");
+
+    all_nv.resize(nv_size);
+    all_nv_cum.resize(nv_cum_size);
 
     for (int r2a = 0; r2a <= r2; r2a++) {
         int r = int(sqrt(r2a));
@@ -593,10 +625,11 @@ void ZnSphereCodecRec::decode(uint64_t code, float* c) const {
                     &all_nv_cum[(ld * (r2 + 1) + r2sub) * (r2 + 1)];
             while (i1 > i0 + 1) {
                 int imed = (i0 + i1) / 2;
-                if (cum[imed] <= codei)
+                if (cum[imed] <= codei) {
                     i0 = imed;
-                else
+                } else {
                     i1 = imed;
+                }
             }
             int r2a = i0, r2b = r2sub - i0;
             codei -= cum[r2a];

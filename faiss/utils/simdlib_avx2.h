@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -21,7 +21,7 @@ namespace faiss {
  * The objective is to separate the different interpretations of the same
  * registers (as a vector of uint8, uint16 or uint32), to provide printing
  * functions, and to give more readable names to the AVX intrinsics. It does not
- * pretend to be exhausitve, functions are added as needed.
+ * pretend to be exhaustive, functions are added as needed.
  */
 
 /// 256-bit representation without interpretation as a vector
@@ -794,8 +794,19 @@ inline simd8float32 getlow128(simd8float32 a, simd8float32 b) {
     return simd8float32(_mm256_permute2f128_ps(a.f, b.f, 0 | 2 << 4));
 }
 
-inline simd8float32 gethigh128(simd8float32 a, simd8float32 b) {
+inline simd8float32 gethigh128(const simd8float32& a, const simd8float32& b) {
     return simd8float32(_mm256_permute2f128_ps(a.f, b.f, 1 | 3 << 4));
+}
+
+// horizontal add: sum all 8 floats in the register
+inline float horizontal_add(const simd8float32& a) {
+    __m128 sum = _mm_add_ps(
+            _mm256_castps256_ps128(a.f), _mm256_extractf128_ps(a.f, 1));
+    __m128 v0 = _mm_shuffle_ps(sum, sum, _MM_SHUFFLE(0, 0, 3, 2));
+    __m128 v1 = _mm_add_ps(sum, v0);
+    __m128 v2 = _mm_shuffle_ps(v1, v1, _MM_SHUFFLE(0, 0, 0, 1));
+    __m128 v3 = _mm_add_ps(v1, v2);
+    return _mm_cvtss_f32(v3);
 }
 
 } // namespace

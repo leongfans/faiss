@@ -1,4 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -32,6 +32,11 @@ def search_preassigned(index_ivf, xq, k, list_nos, coarse_dis=None):
     Supports indexes with pretransforms (as opposed to the
     IndexIVF.search_preassigned, that cannot be applied with pretransform).
     """
+    if isinstance(index_ivf, faiss.IndexPreTransform):
+        assert index_ivf.chain.size() == 1, "chain must have only one component"
+        transform = faiss.downcast_VectorTransform(index_ivf.chain.at(0))
+        xq = transform.apply(xq)
+        index_ivf = faiss.downcast_index(index_ivf.index)
     n, d = xq.shape
     if isinstance(index_ivf, faiss.IndexBinaryIVF):
         d *= 8

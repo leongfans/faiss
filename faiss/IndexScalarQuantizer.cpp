@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -14,7 +14,6 @@
 
 #include <omp.h>
 
-#include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/impl/IDSelector.h>
 #include <faiss/impl/ScalarQuantizer.h>
@@ -32,7 +31,9 @@ IndexScalarQuantizer::IndexScalarQuantizer(
         MetricType metric)
         : IndexFlatCodes(0, d, metric), sq(d, qtype) {
     is_trained = qtype == ScalarQuantizer::QT_fp16 ||
-            qtype == ScalarQuantizer::QT_8bit_direct;
+            qtype == ScalarQuantizer::QT_8bit_direct ||
+            qtype == ScalarQuantizer::QT_bf16 ||
+            qtype == ScalarQuantizer::QT_8bit_direct_signed;
     code_size = sq.code_size;
 }
 
@@ -121,12 +122,15 @@ IndexIVFScalarQuantizer::IndexIVFScalarQuantizer(
         size_t nlist,
         ScalarQuantizer::QuantizerType qtype,
         MetricType metric,
-        bool by_residual)
-        : IndexIVF(quantizer, d, nlist, 0, metric), sq(d, qtype) {
+        bool by_residual,
+        bool own_invlists)
+        : IndexIVF(quantizer, d, nlist, 0, metric, own_invlists), sq(d, qtype) {
     code_size = sq.code_size;
     this->by_residual = by_residual;
-    // was not known at construction time
-    invlists->code_size = code_size;
+    if (invlists) {
+        // was not known at construction time
+        invlists->code_size = code_size;
+    }
     is_trained = false;
 }
 
@@ -178,6 +182,15 @@ void IndexIVFScalarQuantizer::encode_vectors(
     }
 }
 
+void IndexIVFScalarQuantizer::decode_vectors(
+        idx_t n,
+        const uint8_t* codes,
+        const idx_t*,
+        float* x) const {
+    FAISS_THROW_IF_NOT(is_trained);
+    return sq.decode(codes, x, n);
+}
+
 void IndexIVFScalarQuantizer::sa_decode(idx_t n, const uint8_t* codes, float* x)
         const {
     std::unique_ptr<ScalarQuantizer::SQuantizer> squant(sq.select_quantizer());
@@ -207,15 +220,15 @@ void IndexIVFScalarQuantizer::add_core(
         idx_t n,
         const float* x,
         const idx_t* xids,
-        const idx_t* coarse_idx) {
+        const idx_t* coarse_idx,
+        void* inverted_list_context) {
     FAISS_THROW_IF_NOT(is_trained);
 
-    size_t nadd = 0;
     std::unique_ptr<ScalarQuantizer::SQuantizer> squant(sq.select_quantizer());
 
     DirectMapAdd dm_add(direct_map, n, xids);
 
-#pragma omp parallel reduction(+ : nadd)
+#pragma omp parallel
     {
         std::vector<float> residual(d);
         std::vector<uint8_t> one_code(code_size);
@@ -237,10 +250,10 @@ void IndexIVFScalarQuantizer::add_core(
                 memset(one_code.data(), 0, code_size);
                 squant->encode_vector(xi, one_code.data());
 
-                size_t ofs = invlists->add_entry(list_no, id, one_code.data());
+                size_t ofs = invlists->add_entry(
+                        list_no, id, one_code.data(), inverted_list_context);
 
                 dm_add.add(i, list_no, ofs);
-                nadd++;
 
             } else if (rank == 0 && list_no == -1) {
                 dm_add.add(i, -1, 0);
@@ -253,7 +266,8 @@ void IndexIVFScalarQuantizer::add_core(
 
 InvertedListScanner* IndexIVFScalarQuantizer::get_InvertedListScanner(
         bool store_pairs,
-        const IDSelector* sel) const {
+        const IDSelector* sel,
+        const IVFSearchParameters*) const {
     return sq.select_InvertedListScanner(
             metric_type, quantizer, store_pairs, sel, by_residual);
 }

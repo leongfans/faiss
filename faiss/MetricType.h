@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,7 +10,11 @@
 #ifndef FAISS_METRIC_TYPE_H
 #define FAISS_METRIC_TYPE_H
 
-#include <faiss/impl/platform_macros.h>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+
+#include <faiss/impl/FaissAssert.h>
 
 namespace faiss {
 
@@ -19,6 +23,8 @@ namespace faiss {
 /// Most algorithms support both inner product and L2, with the flat
 /// (brute-force) indices supporting additional metric types for vector
 /// comparison.
+///
+/// NOTE: when adding or removing values, update metric_type_from_int() below.
 enum MetricType {
     METRIC_INNER_PRODUCT = 0, ///< maximum inner product search
     METRIC_L2 = 1,            ///< squared L2 search
@@ -31,8 +37,14 @@ enum MetricType {
     METRIC_Canberra = 20,
     METRIC_BrayCurtis,
     METRIC_JensenShannon,
-    METRIC_Jaccard, ///< defined as: sum_i(min(a_i, b_i)) / sum_i(max(a_i, b_i))
-                    ///< where a_i, b_i > 0
+
+    /// sum_i(min(a_i, b_i)) / sum_i(max(a_i, b_i)) where a_i, b_i > 0
+    METRIC_Jaccard,
+    /// Squared Euclidean distance, ignoring NaNs
+    METRIC_NaNEuclidean,
+    /// Gower's distance - numeric dimensions are in [0,1] and categorical
+    /// dimensions are negative integers
+    METRIC_GOWER,
 };
 
 /// all vector indices are this type
@@ -43,6 +55,17 @@ using idx_t = int64_t;
 constexpr bool is_similarity_metric(MetricType metric_type) {
     return ((metric_type == METRIC_INNER_PRODUCT) ||
             (metric_type == METRIC_Jaccard));
+}
+
+/// Convert an integer to MetricType with range validation.
+/// Throws FaissException if the value is not a valid MetricType.
+inline MetricType metric_type_from_int(int x) {
+    FAISS_THROW_IF_NOT_FMT(
+            (x >= METRIC_INNER_PRODUCT && x <= METRIC_Lp) ||
+                    (x >= METRIC_Canberra && x <= METRIC_GOWER),
+            "invalid metric type %d",
+            x);
+    return static_cast<MetricType>(x);
 }
 
 } // namespace faiss

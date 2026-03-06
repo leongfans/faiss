@@ -1,5 +1,5 @@
-/**
- * Copyright (c) Facebook, Inc. and its affiliates.
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,6 +9,7 @@
 
 #include <faiss/Index.h>
 
+#pragma GCC visibility push(default)
 namespace faiss {
 namespace gpu {
 
@@ -18,6 +19,7 @@ class GpuResourcesProvider;
 enum class DistanceDataType {
     F32 = 1,
     F16,
+    BF16,
 };
 
 // Scalar type of the indices data
@@ -105,9 +107,17 @@ struct GpuDistanceParams {
     /// execution
     int device = -1;
 
-    /// Should the index dispatch down to RAFT?
-    bool use_raft = false;
+    /// Should the index dispatch down to cuVS?
+#if defined USE_NVIDIA_CUVS
+    bool use_cuvs = true;
+#else
+    bool use_cuvs = false;
+#endif
 };
+
+/// A function that determines whether cuVS should be used based on various
+/// conditions (such as unsupported architecture)
+bool should_use_cuvs(GpuDistanceParams args);
 
 /// A wrapper for gpu/impl/Distance.cuh to expose direct brute-force k-nearest
 /// neighbor searches on an externally-provided region of memory (e.g., from a
@@ -168,3 +178,4 @@ void bruteForceKnn(
 
 } // namespace gpu
 } // namespace faiss
+#pragma GCC visibility pop
